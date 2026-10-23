@@ -5,13 +5,13 @@ import {
   getDocs, writeBatch,
 } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js';
 import { firebaseConfig } from './firebase.js';
-import { REGIONS, regionName, esc, progress, normaliseTrip, canActivate, describeRoute, grouped } from './domain.mjs';
+import { REGIONS, regionName, esc, progress, normaliseTrip, canActivate, describeRoute, grouped, airlineName } from './domain.mjs';
 
 const firebase = initializeApp(firebaseConfig);
 const auth = getAuth(firebase);
 const db = getFirestore(firebase);
 const $ = id => document.getElementById(id);
-const state = { user: null, unsubscribe: null, trips: [], loading: true, view: 'planned', region: 'all', aircraft: 'all', modalTripId: null, editorLegs: [] };
+const state = { user: null, unsubscribe: null, trips: [], loading: true, view: 'planned', region: 'all', aircraft: 'all', airline: 'all', modalTripId: null, editorLegs: [] };
 const views = {
   planned: ['PLANNING', 'Flight planning', 'Build and organise itineraries for every aircraft type.', 'Planned itineraries'],
   active: ['ACTIVE FLIGHTS', 'Active trips', 'One active itinerary per region. Track progress leg by leg.', 'Currently flying'],
@@ -38,7 +38,7 @@ function slotRef(region) { return doc(db, 'users', state.user.uid, 'activeSlots'
 
 onAuthStateChanged(auth, (user) => {
   if (state.unsubscribe) { state.unsubscribe(); state.unsubscribe = null; }
-  state.user = user; state.trips = []; state.loading = true; state.aircraft = 'all'; closeModal();
+  state.user = user; state.trips = []; state.loading = true; state.aircraft = 'all'; state.airline = 'all'; closeModal();
   $('authScreen').classList.toggle('hidden', !!user);
   $('mainApp').classList.toggle('hidden', !user);
   if (!user) return;
@@ -68,6 +68,7 @@ $('signOutButton').addEventListener('click', () => signOut(auth).catch(err => to
 $('newTripButton').addEventListener('click', () => openEditor(null, {region: state.region === 'all' ? 'north-america' : state.region}));
 $('importButton').addEventListener('click', () => $('importFile').click());
 $('exportButton').addEventListener('click', backup);
+$('airlineFilter').addEventListener('change', e => { state.airline = e.target.value; render(); });
 $('importFile').addEventListener('change', async e => {
   const file = e.target.files?.[0]; e.target.value = '';
   if (!file) return;
@@ -93,7 +94,12 @@ function render() {
   $('aircraftFilters').innerHTML = `<button data-aircraft="all" class="aircraft-item ${state.aircraft === 'all' ? 'selected' : ''}"><span>▦</span> All aircraft <span class="aircraft-count">${state.trips.length}</span></button>` +
     known.map(a => `<button data-aircraft="${esc(a)}" class="aircraft-item ${state.aircraft === a ? 'selected' : ''}"><span>✈</span> ${esc(a)} <span class="aircraft-count">${state.trips.filter(t => t.aircraft === a).length}</span></button>`).join('');
   $('regionFilters').innerHTML = [{id:'all',label:'All regions'},...REGIONS].map(r => `<button data-region="${r.id}" class="region-tab ${state.region === r.id ? 'selected' : ''}">${r.label}</button>`).join('');
-  const visible = grouped(state.trips, state.view, state.aircraft, state.region);
+  const airlines = [...new Set(state.trips.map(t => airlineName(t.airline)))].sort((a,b) => a.localeCompare(b));
+  if (state.airline !== 'all' && !airlines.includes(state.airline)) state.airline = 'all';
+  $('airlineFilter').innerHTML = '<option value="all">All airlines</option>' +
+    airlines.map(a => `<option value="${esc(a)}">${esc(a)}</option>`).join('');
+  $('airlineFilter').value = state.airline;
+  const visible = grouped(state.trips, state.view, state.aircraft, state.region, state.airline);
   $('boardCount').textContent = `${visible.length} ${visible.length === 1 ? 'trip' : 'trips'}`;
   if (state.loading) { $('board').innerHTML = '<div class="loading">Loading schedules from Firestore…</div>'; return; }
   const regions = REGIONS.filter(r => state.region === 'all' || state.region === r.id);
@@ -110,7 +116,7 @@ function emptyRegion(region) {
 }
 function renderCard(t) {
   const p = progress(t), pct = p.total ? Math.round(100*p.done/p.total):0;
-  return `<article class="trip-card"><div class="trip-card-top"><span class="trip-type">${esc(t.aircraft)}</span><span class="trip-status">${p.total} ${p.total===1?'LEG':'LEGS'}</span></div><h4>${esc(t.title)}</h4><div class="trip-route">${esc(describeRoute(t.legs))}</div><div class="card-footer"><span class="mini-progress">${p.done}/${p.total} completed</span><div class="trip-actions">${t.status === 'planned' ? `<button class="text-action" data-activate="${esc(t.id)}">Activate →</button>` : ''}<button class="text-action" data-open="${esc(t.id)}">View details →</button></div></div><div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div></article>`;
+  return `<article class="trip-card"><div class="trip-card-top"><span class="trip-type">${esc(t.aircraft)}</span><span class="trip-status">${p.total} ${p.total===1?'LEG':'LEGS'}</span></div><h4>${esc(t.title)}</h4><div class="trip-airline">Airline: ${esc(airlineName(t.airline))}</div><div class="trip-route">${esc(describeRoute(t.legs))}</div><div class="card-footer"><span class="mini-progress">${p.done}/${p.total} completed</span><div class="trip-actions">${t.status === 'planned' ? `<button class="text-action" data-activate="${esc(t.id)}">Activate →</button>` : ''}<button class="text-action" data-open="${esc(t.id)}">View details →</button></div></div><div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div></article>`;
 }
 
 // Delegate navigation and card actions to the document; rendered elements have stable data-* attributes.
@@ -201,7 +207,7 @@ function openDetail(id) {
   const t=getTrip(id);if(!t)return;
   state.modalTripId=id;
   const p=progress(t),pct=Math.round(100*p.done/p.total);
-  const body=`<div class="detail-head"><span class="pill">${esc(t.aircraft)}</span><span class="pill">${esc(regionName(t.region))}</span><span class="pill ${t.status==='active'?'green':'gray'}">${esc(t.status.toUpperCase())}</span></div><div class="trip-route" style="font-size:14px">${esc(describeRoute(t.legs))}</div>${t.notes?`<div class="detail-note">${esc(t.notes)}</div>`:''}<div class="detail-progress"><span>FLIGHT PROGRESS</span><span>${p.done} of ${p.total} legs · ${pct}%</span></div><div class="progress-track" style="height:7px;margin:2px 0 20px"><div class="progress-fill" style="width:${pct}%"></div></div><div style="overflow:auto"><table class="legs-table"><thead><tr><th>Done</th><th>Leg / Route</th><th>Flight number</th><th>Callsign</th><th>Notes</th></tr></thead><tbody>${t.legs.map((leg,i)=>`<tr class="${leg.completed?'completed-leg':''}"><td><button class="checkbox-button ${leg.completed?'checked':''}" data-check="${i}" aria-label="${leg.completed?'Unmark':'Mark'} leg ${i+1} complete">${leg.completed?'✓':''}</button></td><td>${i+1}. ${esc(leg.departure)} <span class="route-arrow">→</span> ${esc(leg.arrival)}</td><td>${esc(leg.flightNumber)||'—'}</td><td>${esc(leg.callsign)||'—'}</td><td class="leg-notes">${esc(leg.notes)||'—'}</td></tr>`).join('')}</tbody></table></div>`;
+  const body=`<div class="detail-head"><span class="pill">${esc(t.aircraft)}</span><span class="pill">Airline: ${esc(airlineName(t.airline))}</span><span class="pill">${esc(regionName(t.region))}</span><span class="pill ${t.status==='active'?'green':'gray'}">${esc(t.status.toUpperCase())}</span></div><div class="trip-route" style="font-size:14px">${esc(describeRoute(t.legs))}</div>${t.notes?`<div class="detail-note">${esc(t.notes)}</div>`:''}<div class="detail-progress"><span>FLIGHT PROGRESS</span><span>${p.done} of ${p.total} legs · ${pct}%</span></div><div class="progress-track" style="height:7px;margin:2px 0 20px"><div class="progress-fill" style="width:${pct}%"></div></div><div style="overflow:auto"><table class="legs-table"><thead><tr><th>Done</th><th>Leg / Route</th><th>Flight number</th><th>Callsign</th><th>Notes</th></tr></thead><tbody>${t.legs.map((leg,i)=>`<tr class="${leg.completed?'completed-leg':''}"><td><button class="checkbox-button ${leg.completed?'checked':''}" data-check="${i}" aria-label="${leg.completed?'Unmark':'Mark'} leg ${i+1} complete">${leg.completed?'✓':''}</button></td><td>${i+1}. ${esc(leg.departure)} <span class="route-arrow">→</span> ${esc(leg.arrival)}</td><td>${esc(leg.flightNumber)||'—'}</td><td>${esc(leg.callsign)||'—'}</td><td class="leg-notes">${esc(leg.notes)||'—'}</td></tr>`).join('')}</tbody></table></div>`;
   const actions=[];
   if(t.status==='planned')actions.push(`<button id="promoteButton" class="btn primary">Activate trip →</button>`);
   if(t.status==='active')actions.push(`<button id="archiveButton" class="btn primary">${p.done===p.total?'Archive completed trip':'Complete & archive trip'} →</button>`);
@@ -244,10 +250,12 @@ function readEditorLegs() {
 function openEditor(id=null,defaults={}) {
   const t=id?getTrip(id):null;if(id&&!t)return;
   state.modalTripId=null;
-  const trip=t || {title:'',aircraft:state.aircraft==='all'?'':state.aircraft,region:defaults.region||'north-america',notes:'',legs:[blankLeg()],status:'planned'};
+  const trip=t || {title:'',aircraft:state.aircraft==='all'?'':state.aircraft,airline:state.airline==='all'||state.airline==='Unassigned'?'':state.airline,region:defaults.region||'north-america',notes:'',legs:[blankLeg()],status:'planned'};
   const known=[...new Set(state.trips.map(x=>x.aircraft).filter(Boolean))].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
   const aircraftChoices=known.map(a=>`<option value="${esc(a)}" ${trip.aircraft===a?'selected':''}>${esc(a)}</option>`).join('');
-  const body=`<form id="tripForm"><div class="edit-grid"><div class="field"><label for="tripTitle">Trip name</label><input id="tripTitle" placeholder="e.g. B707 world tour" maxlength="180" value="${esc(trip.title)}" required></div><div class="field"><label for="tripAircraft">Aircraft type</label><input id="tripAircraft" maxlength="100" list="aircraftOptions" placeholder="e.g. B707" value="${esc(trip.aircraft)}" required><datalist id="aircraftOptions">${aircraftChoices}</datalist></div><div class="field"><label for="tripRegion">Region</label><select id="tripRegion">${REGIONS.map(r=>`<option value="${r.id}" ${trip.region===r.id?'selected':''}>${r.label}</option>`).join('')}</select></div></div><div class="field"><label for="tripNotes">Trip notes</label><textarea id="tripNotes" rows="2" maxlength="10000" placeholder="Optional general itinerary notes">${esc(trip.notes)}</textarea></div><div class="editor-section"><h3>Flight legs</h3><button type="button" id="addLegButton" class="btn neutral small">+ Add leg</button></div><div class="editor-leg-header"><span>#</span><span>Flight #</span><span>DEP</span><span>ARR</span><span>Callsign</span><span>Notes</span><span>Done</span><span>Order</span></div><div id="editorLegRows"></div><p class="edit-footnote">Use the arrows to reorder legs. The completion checkboxes are saved with each leg. Airport codes are uppercase.</p></form>`;
+  const knownAirlines=[...new Set(state.trips.map(x=>airlineName(x.airline)).filter(x=>x!=='Unassigned'))].sort((a,b)=>a.localeCompare(b));
+  const airlineChoices=knownAirlines.map(a=>`<option value="${esc(a)}"></option>`).join('');
+  const body=`<form id="tripForm"><div class="edit-grid"><div class="field"><label for="tripTitle">Trip name</label><input id="tripTitle" placeholder="e.g. B707 world tour" maxlength="180" value="${esc(trip.title)}" required></div><div class="field"><label for="tripAircraft">Aircraft type</label><input id="tripAircraft" maxlength="100" list="aircraftOptions" placeholder="e.g. B707" value="${esc(trip.aircraft)}" required><datalist id="aircraftOptions">${aircraftChoices}</datalist></div><div class="field"><label for="tripAirline">Airline</label><input id="tripAirline" maxlength="120" list="airlineOptions" placeholder="e.g. British Airways" value="${esc(airlineName(trip.airline)==='Unassigned'&&!t?'':airlineName(trip.airline))}" required><datalist id="airlineOptions">${airlineChoices}</datalist></div><div class="field"><label for="tripRegion">Region</label><select id="tripRegion">${REGIONS.map(r=>`<option value="${r.id}" ${trip.region===r.id?'selected':''}>${r.label}</option>`).join('')}</select></div></div><div class="field"><label for="tripNotes">Trip notes</label><textarea id="tripNotes" rows="2" maxlength="10000" placeholder="Optional general itinerary notes">${esc(trip.notes)}</textarea></div><div class="editor-section"><h3>Flight legs</h3><button type="button" id="addLegButton" class="btn neutral small">+ Add leg</button></div><div class="editor-leg-header"><span>#</span><span>Flight #</span><span>DEP</span><span>ARR</span><span>Callsign</span><span>Notes</span><span>Done</span><span>Order</span></div><div id="editorLegRows"></div><p class="edit-footnote">Use the arrows to reorder legs. The completion checkboxes are saved with each leg. Airport codes are uppercase.</p></form>`;
   modalHTML(t?'Edit itinerary':'Create a new trip',t?'UPDATE FLIGHT PLAN':'FLIGHT PLANNING',body,`<button type="button" class="btn neutral" id="cancelEditor">Cancel</button><button type="submit" form="tripForm" class="btn primary" id="saveTripButton">Save trip</button>`);
   editorRows(trip.legs);
   $('cancelEditor').addEventListener('click',closeModal);
@@ -263,7 +271,7 @@ function openEditor(id=null,defaults={}) {
   $('tripForm').addEventListener('submit',async e=>{
     e.preventDefault();const btn=$('saveTripButton');btn.disabled=true;
     try {
-      const candidate={...(t||{}),title:$('tripTitle').value,aircraft:$('tripAircraft').value,region:$('tripRegion').value,notes:$('tripNotes').value,legs:readEditorLegs()};
+      const candidate={...(t||{}),title:$('tripTitle').value,aircraft:$('tripAircraft').value,airline:$('tripAirline').value,region:$('tripRegion').value,notes:$('tripNotes').value,legs:readEditorLegs()};
       await saveTrip(candidate,id);closeModal();toast(t?'Trip updated.':'Trip created.');
     }catch(e){toast(errorMessage(e),true);}finally{if(btn.isConnected)btn.disabled=false;}
   });
@@ -277,16 +285,16 @@ function backup() {
   if(!state.user||state.loading)return;
   const contents=state.trips.map(t=>({id:t.id,...normaliseTrip(t)}));
   const today=new Date().toISOString().slice(0,10);
-  saveJSON(`flight-schedule-backup-${today}.json`,{format:'flight-planner-backup-v1',exportedAt:new Date().toISOString(),trips:contents});
+  saveJSON(`flight-schedule-backup-${today}.json`,{format:'flight-planner-backup-v2',exportedAt:new Date().toISOString(),trips:contents});
   toast(`Backup downloaded (${contents.length} trips). Keep it in a private location.`);
 }
 async function importFile(file) {
   if (!state.user) throw new Error('You must sign in first.');
   if(file.size>15_000_000)throw new Error('Import file exceeds 15 MB.');
   const raw=JSON.parse(await file.text());
-  if(!['flight-planner-v1','flight-planner-backup-v1'].includes(raw.format)||!Array.isArray(raw.trips))throw new Error('This is not a supported Flight Planner import/backup file.');
+  if(!['flight-planner-v1','flight-planner-v2','flight-planner-backup-v1','flight-planner-backup-v2'].includes(raw.format)||!Array.isArray(raw.trips))throw new Error('This is not a supported Flight Planner import/backup file.');
   if(raw.trips.length>4000)throw new Error('Import exceeds 4,000 trips.');
-  // Complete validation before writing anything to Firestore.
+  // Complete validation before writing anything to Firestore. Legacy imports get 'Unassigned'.
   const inputs=raw.trips.map(t=>({id: String(t.id||''),...normaliseTrip(t)}));
   if(new Set(inputs.map(t=>t.id)).size!==inputs.length || inputs.some(x=>!/^[-a-zA-Z0-9_]{8,160}$/.test(x.id))) throw new Error('One or more import IDs are invalid or repeated.');
   const existing=await getDocs(tripsRef());
