@@ -11,3 +11,6 @@
 .trip-airline{font-size:12px;color:#42749a;font-weight:750;margin:6px 0 7px;overflow-wrap:anywhere}
 @media(max-width:900px){.board-filters{justify-content:flex-start}}
 @media(max-width:650px){.board-filters{gap:7px}.airline-filter{min-width:130px;max-width:100%;font-size:11px}.airline-filter-label{font-size:10px}}
+
+/* v1.2 automatic airline/aircraft trip naming */
+.numbering-panel{display:grid;grid-template-columns:minmax(0,2fr) minmax(160px,1fr);gap:14px;padding:15px;border:1px solid #d7e9f6;border-radius:10px;background:#f3f9fe;margin-bottom:18px}.generated-trip-title{font:800 17px Manrope,sans-serif;color:#224765;padding-top:8px;overflow-wrap:anywhere}.manual-number-label{display:flex;align-items:center;gap:7px;margin-top:9px;font-size:11px;font-weight:700;color:#46677e}.manual-number-label input{width:16px;height:16px;margin:0}.invalid-number{color:#bf3b40!important}.numbering-panel .edit-footnote{margin:6px 0 0}.trip-card h4{overflow-wrap:anywhere}@media(max-width:650px){.numbering-panel{grid-template-columns:1fr}}

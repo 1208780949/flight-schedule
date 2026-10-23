@@ -2,16 +2,17 @@ import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.19.0/fireba
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js';
 import {
   getFirestore, collection, doc, onSnapshot, serverTimestamp, runTransaction,
-  getDocs, writeBatch,
+  getDocsFromServer,
 } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js';
 import { firebaseConfig } from './firebase.js';
 import { REGIONS, regionName, esc, progress, normaliseTrip, canActivate, describeRoute, grouped, airlineName } from './domain.mjs';
+import { assignNumbers, comboKey, tripTitle, splitLegs, validNumber } from './numbering.mjs';
 
 const firebase = initializeApp(firebaseConfig);
 const auth = getAuth(firebase);
 const db = getFirestore(firebase);
 const $ = id => document.getElementById(id);
-const state = { user: null, unsubscribe: null, trips: [], loading: true, view: 'planned', region: 'all', aircraft: 'all', airline: 'all', modalTripId: null, editorLegs: [] };
+const state = { numberingBusy:false, user: null, unsubscribe: null, trips: [], loading: true, view: 'planned', region: 'all', aircraft: 'all', airline: 'all', modalTripId: null, editorLegs: [] };
 const views = {
   planned: ['PLANNING', 'Flight planning', 'Build and organise itineraries for every aircraft type.', 'Planned itineraries'],
   active: ['ACTIVE FLIGHTS', 'Active trips', 'One active itinerary per region. Track progress leg by leg.', 'Currently flying'],
@@ -35,6 +36,7 @@ function getTrip(id) { return state.trips.find(t => t.id === id); }
 function tripsRef() { return collection(db, 'users', state.user.uid, 'trips'); }
 function tripRef(id) { return doc(db, 'users', state.user.uid, 'trips', id); }
 function slotRef(region) { return doc(db, 'users', state.user.uid, 'activeSlots', region); }
+function numberingRef() { return doc(db, 'users', state.user.uid, 'metadata', 'numbering'); }
 
 onAuthStateChanged(auth, (user) => {
   if (state.unsubscribe) { state.unsubscribe(); state.unsubscribe = null; }
@@ -50,6 +52,7 @@ onAuthStateChanged(auth, (user) => {
     $('connectionStatus').textContent = snapshot.metadata.fromCache ? 'Offline / cached data' : 'All changes synced';
     render();
     refreshDetailIfOpen();
+    if (!snapshot.metadata.fromCache && state.trips.some(t => !validNumber(t.tripNumber) || t.title !== tripTitle(t))) void ensureNumbering();
   }, error => {
     state.loading = false; $('connectionStatus').textContent = 'Sync unavailable';
     $('board').innerHTML = `<div class="warning-box">${esc(errorMessage(error))}</div>`;
@@ -116,7 +119,7 @@ function emptyRegion(region) {
 }
 function renderCard(t) {
   const p = progress(t), pct = p.total ? Math.round(100*p.done/p.total):0;
-  return `<article class="trip-card"><div class="trip-card-top"><span class="trip-type">${esc(t.aircraft)}</span><span class="trip-status">${p.total} ${p.total===1?'LEG':'LEGS'}</span></div><h4>${esc(t.title)}</h4><div class="trip-airline">Airline: ${esc(airlineName(t.airline))}</div><div class="trip-route">${esc(describeRoute(t.legs))}</div><div class="card-footer"><span class="mini-progress">${p.done}/${p.total} completed</span><div class="trip-actions">${t.status === 'planned' ? `<button class="text-action" data-activate="${esc(t.id)}">Activate →</button>` : ''}<button class="text-action" data-open="${esc(t.id)}">View details →</button></div></div><div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div></article>`;
+  return `<article class="trip-card"><div class="trip-card-top"><span class="trip-type">${esc(t.aircraft)}</span><span class="trip-status">${p.total} ${p.total===1?'LEG':'LEGS'}</span></div><h4>${esc(t.title)}</h4><div class="trip-route">${esc(describeRoute(t.legs))}</div><div class="card-footer"><span class="mini-progress">${p.done}/${p.total} completed</span><div class="trip-actions">${t.status === 'planned' ? `<button class="text-action" data-activate="${esc(t.id)}">Activate →</button>` : ''}<button class="text-action" data-open="${esc(t.id)}">View details →</button></div></div><div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div></article>`;
 }
 
 // Delegate navigation and card actions to the document; rendered elements have stable data-* attributes.
@@ -130,36 +133,111 @@ document.addEventListener('click', async e => {
   if (button.dataset.activate) { await changeStatus(button.dataset.activate,'active'); return; }
 });
 
-// A transaction protects each region's one-active-trip slot even when two browsers act simultaneously.
-async function saveTrip(nextInput, id, allowCreateId = false) {
+// All renumbering changes are serialized by a per-account revision record. The server
+// collection is re-read on transaction retries, so concurrent browsers cannot allocate
+// the same (airline, aircraft, trip number). Every status and region participates.
+async function numberedMutation(change) {
   if (!state.user) throw new Error('Please sign in.');
-  const next = normaliseTrip(nextInput);
-  const ref = id ? tripRef(id) : doc(tripsRef());
-  await runTransaction(db, async txn => {
-    const existingSnap = await txn.get(ref), previous = existingSnap.exists() ? existingSnap.data() : null;
-    if (id && !previous && !allowCreateId) throw new Error('This trip has been deleted on another device. Refresh and retry.');
-    const oldRegion = previous?.status === 'active' ? previous.region : null;
-    const newRegion = next.status === 'active' ? next.region : null;
-    const oldSlotRef = oldRegion ? slotRef(oldRegion) : null;
-    const newSlotRef = newRegion ? slotRef(newRegion) : null;
-    const oldSlotSnap = oldSlotRef ? await txn.get(oldSlotRef) : null;
-    const newSlotSnap = newSlotRef && newRegion !== oldRegion ? await txn.get(newSlotRef) : oldSlotSnap;
-    if (newSlotSnap?.exists() && newSlotSnap.data().tripId !== ref.id)
-      throw new Error(`Only one trip may be active in ${regionName(newRegion)}. Archive or move the other trip back to Planned first.`);
-    if (oldRegion && oldSlotSnap?.exists() && oldSlotSnap.data().tripId !== ref.id)
-      throw new Error('The active-region slot has changed. Reload before saving.');
-    const data = {
-      ...(previous || {}), ...next,
-      updatedAt: serverTimestamp(),
-      createdAt: previous?.createdAt || serverTimestamp(),
-      activatedAt: next.status === 'active' ? (previous?.status === 'active' ? previous.activatedAt || serverTimestamp() : serverTimestamp()) : (previous?.activatedAt || null),
-      archivedAt: next.status === 'archived' ? (previous?.status === 'archived' ? previous.archivedAt || serverTimestamp() : serverTimestamp()) : (previous?.archivedAt || null),
+  return runTransaction(db, async txn => {
+    const lockRef = numberingRef();
+    const lock = await txn.get(lockRef);
+    const snapshot = await getDocsFromServer(tripsRef());
+    const originals = new Map(snapshot.docs.map(s => [s.id,{...s.data(),id:s.id}]));
+    const staged = new Map(); // id => full normalized value or null to delete
+    const slotChanges = new Map();
+    const slotReads = new Map();
+    const api = {
+      trips: [...originals.values()],
+      priorityId: null,
+      getTrip: async id => {
+        const ref = tripRef(id), snap = await txn.get(ref);
+        return snap.exists() ? {...snap.data(),id} : null;
+      },
+      put: (id,value) => { staged.set(id,normaliseTrip(value)); },
+      remove: id => {staged.set(id,null);},
+      moveSlot: async (oldTrip,newId,newRegion) => {
+        const oldRegion = oldTrip?.status === 'active' ? oldTrip.region : null;
+        if(oldRegion) {
+          const ref=slotRef(oldRegion);
+          const slot=slotReads.get(oldRegion) || await txn.get(ref);
+          slotReads.set(oldRegion,slot);
+          if(slot.exists() && slot.data().tripId!==oldTrip.id)
+            throw new Error('Active region changed on another device; reload and retry.');
+          if(oldRegion !== newRegion) slotChanges.set(oldRegion,null);
+        }
+        if(newRegion) {
+          const pendingOwner=slotChanges.get(newRegion);
+          if(pendingOwner && pendingOwner!==newId && pendingOwner!==oldTrip?.id)
+            throw new Error(`Only one trip may be active in ${regionName(newRegion)}.`);
+          if(!REGIONS.some(r=>r.id===newRegion))throw new Error('Invalid active region.');
+          const ref=slotRef(newRegion);
+          const slot=slotReads.get(newRegion) || await txn.get(ref);
+          slotReads.set(newRegion,slot);
+          if(slot.exists() && slot.data().tripId!==newId && slot.data().tripId!==oldTrip?.id)
+            throw new Error(`Only one trip may be active in ${regionName(newRegion)}. Archive or move the other trip first.`);
+          slotChanges.set(newRegion,newId);
+        }
+      },
     };
-    txn.set(ref, data);
-    if (oldRegion && oldRegion !== newRegion && oldSlotSnap?.exists()) txn.delete(oldSlotRef);
-    if (newRegion) txn.set(newSlotRef, { tripId:ref.id });
+    const result = await change(api);
+    const combined = new Map(originals);
+    for(const [id,data] of staged) {
+      if(data===null)combined.delete(id);
+      else combined.set(id,{...(originals.get(id)||{}),...data,id});
+    }
+    const numbered = assignNumbers([...combined.values()],{priorityId:api.priorityId});
+    if(numbered.length > 4000)throw new Error('Too many trips for this version.');
+    let writes=1+slotChanges.size+Array.from(staged.values()).filter(x=>x===null).length;
+    for (const t of numbered) {
+      const old=originals.get(t.id);
+      const newInput=staged.get(t.id);
+      const changedNumber=!old || old.tripNumber!==t.tripNumber || old.title!==t.title || old.numberManual!==t.numberManual || old.numberLocked!==t.numberLocked;
+      if(!changedNumber && newInput===undefined) continue;
+      writes++;
+    }
+    if(writes>450)throw new Error('This operation affects more than 450 documents. Contact me to add chunked migration support.');
+    // All transaction reads above; now apply writes.
+    for(const [id,data] of staged)if(data===null)txn.delete(tripRef(id));
+    for (const t of numbered) {
+      const old=originals.get(t.id);
+      const newInput=staged.get(t.id);
+      const changedNumber=!old || old.tripNumber!==t.tripNumber || old.title!==t.title || old.numberManual!==t.numberManual || old.numberLocked!==t.numberLocked;
+      if(newInput!==undefined) {
+        const {id:storedId,...storedTrip}=t;
+        txn.set(tripRef(t.id), {
+          ...storedTrip,
+          createdAt:old?.createdAt || serverTimestamp(), updatedAt:serverTimestamp(),
+          activatedAt:t.status==='active'?(old?.status==='active' ? old.activatedAt || serverTimestamp():serverTimestamp()):(old?.activatedAt || null),
+          archivedAt:t.status==='archived'?(old?.status==='archived' ? old.archivedAt || serverTimestamp():serverTimestamp()):(old?.archivedAt || null),
+        });
+      } else if(changedNumber) txn.update(tripRef(t.id),{title:t.title,tripNumber:t.tripNumber,numberManual:t.numberManual,numberLocked:t.numberLocked,updatedAt:serverTimestamp()});
+    }
+    for (const [region,id] of slotChanges) {
+      if(id===null)txn.delete(slotRef(region));
+      else txn.set(slotRef(region),{tripId:id});
+    }
+    txn.set(lockRef,{revision:(lock.exists()?lock.data().revision||0:0)+1,updatedAt:serverTimestamp()});
+    return result;
   });
-  return ref.id;
+}
+// Renames legacy v1.x documents in place without changing their IDs or flight legs.
+async function ensureNumbering() {
+  if (state.numberingBusy || !state.user) return;
+  state.numberingBusy=true;
+  try { await numberedMutation(async()=>{}); }
+  catch(e){console.error('Numbering upgrade:',e);toast(`Trip numbering update failed: ${errorMessage(e)}. Ensure the new firestore.rules were published.`,true);}
+  finally{state.numberingBusy=false;}
+}
+async function saveTrip(nextInput, id, allowCreateId = false) {
+  const next=normaliseTrip(nextInput);
+  const newId=id || doc(tripsRef()).id;
+  await numberedMutation(async api=>{
+    const old=await api.getTrip(newId);
+    if(id && !old && !allowCreateId)throw new Error('Trip deleted on another device; reload and retry.');
+    await api.moveSlot(old,newId,next.status==='active'?next.region:null);
+    api.put(newId,next);
+  });
+  return newId;
 }
 async function changeStatus(id, to) {
   const trip = getTrip(id); if (!trip) return;
@@ -183,17 +261,41 @@ async function toggleLeg(id,index) {
   }catch(e){toast(errorMessage(e),true);}
 }
 async function deleteTrip(id){
-  if(!window.confirm('Permanently delete this trip and every leg? This cannot be undone.'))return;
+  if(!window.confirm('Permanently delete this trip and every leg? Automatic trip numbers in its airline/aircraft group may be reassigned.'))return;
   try {
-    const ref=tripRef(id);
-    await runTransaction(db,async txn=>{
-      const snap=await txn.get(ref);if(!snap.exists())return;
-      const t=snap.data();const slot=t.status==='active'?slotRef(t.region):null;
-      const current=slot?await txn.get(slot):null;
-      txn.delete(ref);
-      if(slot&&current?.exists()&&current.data().tripId===id)txn.delete(slot);
+    await numberedMutation(async api=>{
+      const old=await api.getTrip(id); if(!old)return;
+      await api.moveSlot(old,null,null);
+      api.remove(id);
     });
-    closeModal();toast('Trip deleted.');
+    closeModal();toast('Trip deleted and automatic trip numbers updated.');
+  }catch(e){toast(errorMessage(e),true);}
+}
+async function archiveCompleted(id) {
+  try {
+    const outcome=await numberedMutation(async api=>{
+      const current=await api.getTrip(id);
+      if(!current)throw new Error('Trip no longer exists.');
+      if(current.status==='archived')throw new Error('This trip is already archived.');
+      const {done,remaining}=splitLegs(current);
+      // A legacy trip may not yet have a number when first opened.
+      const now=assignNumbers(api.trips).find(t=>t.id===id);
+      const n=now?.tripNumber;
+      if(!validNumber(n))throw new Error('Unable to determine trip number. Refresh and retry.');
+      const archived={...current,tripNumber:n,legs:done,status:'archived',numberLocked:true};
+      const newId=remaining.length?doc(tripsRef()).id:null;
+      const successor=remaining.length?{
+        aircraft:current.aircraft,airline:current.airline,region:current.region,status:current.status,
+        title:'',notes:current.notes,legs:remaining,tripNumber:n+1,
+        numberManual:false,numberLocked:false,splitFrom:id,
+      }:null;
+      await api.moveSlot(current,newId,current.status==='active'&&newId ? current.region:null);
+      api.put(id,archived);
+      if(successor) {api.put(newId,successor);api.priorityId=newId;}
+      return {remaining:remaining.length,done:done.length,n,newId};
+    });
+    closeModal();
+    toast(outcome.remaining ? `Archived ${outcome.done} completed legs as Trip ${outcome.n}; ${outcome.remaining} remaining legs moved to Trip ${outcome.n+1}.` : `Archived completed Trip ${outcome.n}.`);
   }catch(e){toast(errorMessage(e),true);}
 }
 function modalHTML(title, subtitle, body, footer, small=false) {
@@ -207,10 +309,10 @@ function openDetail(id) {
   const t=getTrip(id);if(!t)return;
   state.modalTripId=id;
   const p=progress(t),pct=Math.round(100*p.done/p.total);
-  const body=`<div class="detail-head"><span class="pill">${esc(t.aircraft)}</span><span class="pill">Airline: ${esc(airlineName(t.airline))}</span><span class="pill">${esc(regionName(t.region))}</span><span class="pill ${t.status==='active'?'green':'gray'}">${esc(t.status.toUpperCase())}</span></div><div class="trip-route" style="font-size:14px">${esc(describeRoute(t.legs))}</div>${t.notes?`<div class="detail-note">${esc(t.notes)}</div>`:''}<div class="detail-progress"><span>FLIGHT PROGRESS</span><span>${p.done} of ${p.total} legs · ${pct}%</span></div><div class="progress-track" style="height:7px;margin:2px 0 20px"><div class="progress-fill" style="width:${pct}%"></div></div><div style="overflow:auto"><table class="legs-table"><thead><tr><th>Done</th><th>Leg / Route</th><th>Flight number</th><th>Callsign</th><th>Notes</th></tr></thead><tbody>${t.legs.map((leg,i)=>`<tr class="${leg.completed?'completed-leg':''}"><td><button class="checkbox-button ${leg.completed?'checked':''}" data-check="${i}" aria-label="${leg.completed?'Unmark':'Mark'} leg ${i+1} complete">${leg.completed?'✓':''}</button></td><td>${i+1}. ${esc(leg.departure)} <span class="route-arrow">→</span> ${esc(leg.arrival)}</td><td>${esc(leg.flightNumber)||'—'}</td><td>${esc(leg.callsign)||'—'}</td><td class="leg-notes">${esc(leg.notes)||'—'}</td></tr>`).join('')}</tbody></table></div>`;
+  const body=`<div class="detail-head"><span class="pill">${esc(t.aircraft)}</span><span class="pill">${esc(regionName(t.region))}</span><span class="pill ${t.status==='active'?'green':'gray'}">${esc(t.status.toUpperCase())}</span></div><div class="trip-route" style="font-size:14px">${esc(describeRoute(t.legs))}</div>${t.notes?`<div class="detail-note">${esc(t.notes)}</div>`:''}<div class="detail-progress"><span>FLIGHT PROGRESS</span><span>${p.done} of ${p.total} legs · ${pct}%</span></div><div class="progress-track" style="height:7px;margin:2px 0 20px"><div class="progress-fill" style="width:${pct}%"></div></div><div style="overflow:auto"><table class="legs-table"><thead><tr><th>Done</th><th>Leg / Route</th><th>Flight number</th><th>Callsign</th><th>Notes</th></tr></thead><tbody>${t.legs.map((leg,i)=>`<tr class="${leg.completed?'completed-leg':''}"><td><button class="checkbox-button ${leg.completed?'checked':''}" data-check="${i}" aria-label="${leg.completed?'Unmark':'Mark'} leg ${i+1} complete">${leg.completed?'✓':''}</button></td><td>${i+1}. ${esc(leg.departure)} <span class="route-arrow">→</span> ${esc(leg.arrival)}</td><td>${esc(leg.flightNumber)||'—'}</td><td>${esc(leg.callsign)||'—'}</td><td class="leg-notes">${esc(leg.notes)||'—'}</td></tr>`).join('')}</tbody></table></div>`;
   const actions=[];
   if(t.status==='planned')actions.push(`<button id="promoteButton" class="btn primary">Activate trip →</button>`);
-  if(t.status==='active')actions.push(`<button id="archiveButton" class="btn primary">${p.done===p.total?'Archive completed trip':'Complete & archive trip'} →</button>`);
+  if(t.status!=='archived')actions.push(`<button id="archiveButton" class="btn primary" ${p.done===0?'disabled':''}>${p.done===p.total?'Archive completed trip':'Archive completed legs'} →</button>`);
   if(t.status==='active'||t.status==='archived')actions.push('<button id="returnPlanningButton" class="btn neutral">Move to planning</button>');
   if(t.status==='archived')actions.push('<button id="reactivateButton" class="btn neutral">Reactivate</button>');
   const footer=`<button id="deleteButton" class="btn danger small">Delete</button><div class="footer-actions"><button id="editButton" class="btn neutral">Edit itinerary</button>${actions.join('')}</div>`;
@@ -220,12 +322,11 @@ function openDetail(id) {
   $('promoteButton')?.addEventListener('click',()=>changeStatus(id,'active'));
   $('returnPlanningButton')?.addEventListener('click',()=>changeStatus(id,'planned'));
   $('reactivateButton')?.addEventListener('click',()=>changeStatus(id,'active'));
-  $('archiveButton')?.addEventListener('click',async()=>{
-    const latest=getTrip(id); if(!latest)return;
-    if(latest.legs.some(l=>!l.completed)){
-      if(!window.confirm('Some legs are not checked. Mark all remaining legs complete and archive the trip?'))return;
-      try{await saveTrip({...latest,legs:latest.legs.map(l=>({...l,completed:true})),status:'archived'},id);toast('All legs marked complete; trip archived.');closeModal();}catch(e){toast(errorMessage(e),true);}
-    }else await changeStatus(id,'archived');
+  $('archiveButton')?.addEventListener('click',()=>{
+    const current=getTrip(id);if(!current)return;
+    const {done,remaining}=splitLegs(current);
+    const detail=remaining.length?`Archive ${done.length} completed legs under the current trip number and create a new trip for the ${remaining.length} unfinished legs?`:`Archive this completed trip (${done.length} legs)?`;
+    if(window.confirm(detail))void archiveCompleted(id);
   });
 }
 // Keep details current after live Firestore updates; don't replace an actively edited form.
@@ -250,13 +351,35 @@ function readEditorLegs() {
 function openEditor(id=null,defaults={}) {
   const t=id?getTrip(id):null;if(id&&!t)return;
   state.modalTripId=null;
-  const trip=t || {title:'',aircraft:state.aircraft==='all'?'':state.aircraft,airline:state.airline==='all'||state.airline==='Unassigned'?'':state.airline,region:defaults.region||'north-america',notes:'',legs:[blankLeg()],status:'planned'};
+  const trip=t || {title:'',tripNumber:null,numberManual:false,numberLocked:false,aircraft:state.aircraft==='all'?'':state.aircraft,airline:state.airline==='all'||state.airline==='Unassigned'?'':state.airline,region:defaults.region||'north-america',notes:'',legs:[blankLeg()],status:'planned'};
   const known=[...new Set(state.trips.map(x=>x.aircraft).filter(Boolean))].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
   const aircraftChoices=known.map(a=>`<option value="${esc(a)}" ${trip.aircraft===a?'selected':''}>${esc(a)}</option>`).join('');
   const knownAirlines=[...new Set(state.trips.map(x=>airlineName(x.airline)).filter(x=>x!=='Unassigned'))].sort((a,b)=>a.localeCompare(b));
   const airlineChoices=knownAirlines.map(a=>`<option value="${esc(a)}"></option>`).join('');
-  const body=`<form id="tripForm"><div class="edit-grid"><div class="field"><label for="tripTitle">Trip name</label><input id="tripTitle" placeholder="e.g. B707 world tour" maxlength="180" value="${esc(trip.title)}" required></div><div class="field"><label for="tripAircraft">Aircraft type</label><input id="tripAircraft" maxlength="100" list="aircraftOptions" placeholder="e.g. B707" value="${esc(trip.aircraft)}" required><datalist id="aircraftOptions">${aircraftChoices}</datalist></div><div class="field"><label for="tripAirline">Airline</label><input id="tripAirline" maxlength="120" list="airlineOptions" placeholder="e.g. British Airways" value="${esc(airlineName(trip.airline)==='Unassigned'&&!t?'':airlineName(trip.airline))}" required><datalist id="airlineOptions">${airlineChoices}</datalist></div><div class="field"><label for="tripRegion">Region</label><select id="tripRegion">${REGIONS.map(r=>`<option value="${r.id}" ${trip.region===r.id?'selected':''}>${r.label}</option>`).join('')}</select></div></div><div class="field"><label for="tripNotes">Trip notes</label><textarea id="tripNotes" rows="2" maxlength="10000" placeholder="Optional general itinerary notes">${esc(trip.notes)}</textarea></div><div class="editor-section"><h3>Flight legs</h3><button type="button" id="addLegButton" class="btn neutral small">+ Add leg</button></div><div class="editor-leg-header"><span>#</span><span>Flight #</span><span>DEP</span><span>ARR</span><span>Callsign</span><span>Notes</span><span>Done</span><span>Order</span></div><div id="editorLegRows"></div><p class="edit-footnote">Use the arrows to reorder legs. The completion checkboxes are saved with each leg. Airport codes are uppercase.</p></form>`;
+  const members=state.trips.filter(x=>comboKey(x)===comboKey(trip) && (!t || x.id!==t.id));
+  const suggested = validNumber(trip.tripNumber) ? trip.tripNumber : members.length+1;
+  const body=`<form id="tripForm"><div class="numbering-panel"><div class="field"><label for="tripPreview">Automatically generated trip name</label><div class="generated-trip-title" id="tripPreview">${esc(tripTitle({...trip,tripNumber:suggested}))}</div><p id="numberHelp" class="edit-footnote">Trip numbers are unique for each airline and aircraft, across all regions and statuses.</p></div><div class="field"><label for="tripNumber">Trip number (n)</label><input id="tripNumber" type="number" min="1" max="100000" step="1" value="${suggested}" required><label class="manual-number-label"><input id="tripNumberManual" type="checkbox" ${trip.numberManual?'checked':''}> Reserve this number manually</label></div></div><div class="edit-grid"><div class="field"><label for="tripAircraft">Aircraft type</label><input id="tripAircraft" maxlength="100" list="aircraftOptions" placeholder="e.g. B707" value="${esc(trip.aircraft)}" required><datalist id="aircraftOptions">${aircraftChoices}</datalist></div><div class="field"><label for="tripAirline">Airline</label><input id="tripAirline" maxlength="120" list="airlineOptions" placeholder="e.g. British Airways" value="${esc(airlineName(trip.airline)==='Unassigned'&&!t?'':airlineName(trip.airline))}" required><datalist id="airlineOptions">${airlineChoices}</datalist></div><div class="field"><label for="tripRegion">Region</label><select id="tripRegion">${REGIONS.map(r=>`<option value="${r.id}" ${trip.region===r.id?'selected':''}>${r.label}</option>`).join('')}</select></div></div><div class="field"><label for="tripNotes">Trip notes</label><textarea id="tripNotes" rows="2" maxlength="10000" placeholder="Optional general itinerary notes">${esc(trip.notes)}</textarea></div><div class="editor-section"><h3>Flight legs</h3><button type="button" id="addLegButton" class="btn neutral small">+ Add leg</button></div><div class="editor-leg-header"><span>#</span><span>Flight #</span><span>DEP</span><span>ARR</span><span>Callsign</span><span>Notes</span><span>Done</span><span>Order</span></div><div id="editorLegRows"></div><p class="edit-footnote">Use the arrows to reorder legs. The completion checkboxes are saved with each leg. Airport codes are uppercase.</p></form>`;
   modalHTML(t?'Edit itinerary':'Create a new trip',t?'UPDATE FLIGHT PLAN':'FLIGHT PLANNING',body,`<button type="button" class="btn neutral" id="cancelEditor">Cancel</button><button type="submit" form="tripForm" class="btn primary" id="saveTripButton">Save trip</button>`);
+  const updateNumberPreview=()=>{
+    const temporary={airline:$('tripAirline').value.trim()||'Unassigned',aircraft:$('tripAircraft').value.trim()};
+    const count=state.trips.filter(x=>comboKey(x)===comboKey(temporary) && (!t||x.id!==t.id)).length+1;
+    const n=Number($('tripNumber').value);
+    $('tripNumber').max=String(count);
+    $('tripPreview').textContent=tripTitle({...temporary,tripNumber:validNumber(n)?n:null});
+    $('numberHelp').textContent=`Valid numbers for this airline and aircraft: 1–${count}. ${$('tripNumberManual').checked?'Manually reserved numbers cannot be used by another trip.':'Automatic numbers are reassigned around manually reserved numbers.'}`;
+    $('numberHelp').classList.toggle('invalid-number', !validNumber(n)||n>count);
+  };
+  for(const el of ['tripAircraft','tripAirline']) $(el).addEventListener('input',()=>{
+    const temporary={airline:$('tripAirline').value,aircraft:$('tripAircraft').value};
+    const matches=state.trips.filter(x=>comboKey(x)===comboKey(temporary) && (!t||x.id!==t.id));
+    if(!t || comboKey(temporary)!==comboKey(t)) {
+      if(!$('tripNumberManual').checked) $('tripNumber').value=String(matches.length+1);
+    }
+    updateNumberPreview();
+  });
+  $('tripNumber').addEventListener('input',()=>{$('tripNumberManual').checked=true;updateNumberPreview();});
+  $('tripNumberManual').addEventListener('change',()=>updateNumberPreview());
+  updateNumberPreview();
   editorRows(trip.legs);
   $('cancelEditor').addEventListener('click',closeModal);
   $('addLegButton').addEventListener('click',()=>{const rows=readEditorLegs();rows.push(blankLeg());editorRows(rows);$('editorLegRows').lastElementChild.querySelector('[data-field="flightNumber"]').focus();});
@@ -271,7 +394,9 @@ function openEditor(id=null,defaults={}) {
   $('tripForm').addEventListener('submit',async e=>{
     e.preventDefault();const btn=$('saveTripButton');btn.disabled=true;
     try {
-      const candidate={...(t||{}),title:$('tripTitle').value,aircraft:$('tripAircraft').value,airline:$('tripAirline').value,region:$('tripRegion').value,notes:$('tripNotes').value,legs:readEditorLegs()};
+      const candidate={...(t||{}),aircraft:$('tripAircraft').value,airline:$('tripAirline').value,region:$('tripRegion').value,notes:$('tripNotes').value,legs:readEditorLegs(),tripNumber:$('tripNumberManual').checked?Number($('tripNumber').value):(!t || comboKey(t)!==comboKey({airline:$('tripAirline').value,aircraft:$('tripAircraft').value})?null:t.tripNumber),numberManual:$('tripNumberManual').checked,numberLocked:t?.numberLocked===true && !$('tripNumberManual').checked};
+      const comboCount=state.trips.filter(x=>comboKey(x)===comboKey(candidate) && (!t||x.id!==t.id)).length+1;
+      if($('tripNumberManual').checked && (!validNumber(candidate.tripNumber) || candidate.tripNumber>comboCount))throw new Error(`Trip number must be between 1 and ${comboCount} for this airline and aircraft.`);
       await saveTrip(candidate,id);closeModal();toast(t?'Trip updated.':'Trip created.');
     }catch(e){toast(errorMessage(e),true);}finally{if(btn.isConnected)btn.disabled=false;}
   });
@@ -285,37 +410,40 @@ function backup() {
   if(!state.user||state.loading)return;
   const contents=state.trips.map(t=>({id:t.id,...normaliseTrip(t)}));
   const today=new Date().toISOString().slice(0,10);
-  saveJSON(`flight-schedule-backup-${today}.json`,{format:'flight-planner-backup-v2',exportedAt:new Date().toISOString(),trips:contents});
+  saveJSON(`flight-schedule-backup-${today}.json`,{format:'flight-planner-backup-v3',exportedAt:new Date().toISOString(),trips:contents});
   toast(`Backup downloaded (${contents.length} trips). Keep it in a private location.`);
 }
 async function importFile(file) {
-  if (!state.user) throw new Error('You must sign in first.');
+  if(!state.user)throw new Error('You must sign in first.');
   if(file.size>15_000_000)throw new Error('Import file exceeds 15 MB.');
   const raw=JSON.parse(await file.text());
-  if(!['flight-planner-v1','flight-planner-v2','flight-planner-backup-v1','flight-planner-backup-v2'].includes(raw.format)||!Array.isArray(raw.trips))throw new Error('This is not a supported Flight Planner import/backup file.');
+  if(!['flight-planner-v1','flight-planner-v2','flight-planner-backup-v1','flight-planner-backup-v2','flight-planner-backup-v3'].includes(raw.format)||!Array.isArray(raw.trips))throw new Error('Unsupported Flight Schedule import/backup file.');
   if(raw.trips.length>4000)throw new Error('Import exceeds 4,000 trips.');
-  // Complete validation before writing anything to Firestore. Legacy imports get 'Unassigned'.
-  const inputs=raw.trips.map(t=>({id: String(t.id||''),...normaliseTrip(t)}));
-  if(new Set(inputs.map(t=>t.id)).size!==inputs.length || inputs.some(x=>!/^[-a-zA-Z0-9_]{8,160}$/.test(x.id))) throw new Error('One or more import IDs are invalid or repeated.');
-  const existing=await getDocs(tripsRef());
-  const ids=new Set(existing.docs.map(d=>d.id));
-  const pending=inputs.filter(t=>!ids.has(t.id));
-  if(!pending.length){toast('Nothing to import. Every trip already exists.');return;}
-  if(!window.confirm(`Import ${pending.length} new trips from ${file.name}? ${inputs.length-pending.length} existing trips will be skipped, not overwritten. You can undo by deleting imported trips manually or restore from a backup.`))return;
-  let inserted=0,activeImported=0,activeSkipped=0;
-  const other=pending.filter(t=>t.status!=='active');
-  for(let i=0;i<other.length;i+=250){
-    const batch=writeBatch(db);
-    for(const t of other.slice(i,i+250)){
-      const {id,...values}=t;
-      batch.set(tripRef(id),{...values,createdAt:serverTimestamp(),updatedAt:serverTimestamp(),activatedAt:null,archivedAt:values.status==='archived'?serverTimestamp():null});
-    }
-    await batch.commit();inserted+=Math.min(250,other.length-i);
+  const inputs=raw.trips.map(t=>({id:String(t.id||''),...normaliseTrip(t)}));
+  if(new Set(inputs.map(x=>x.id)).size!==inputs.length||inputs.some(x=>!/^[-a-zA-Z0-9_]{8,160}$/.test(x.id)))throw new Error('One or more import IDs are invalid or repeated.');
+  const current=await getDocsFromServer(tripsRef());
+  const existingIds=new Set(current.docs.map(x=>x.id));
+  const pending=inputs.filter(x=>!existingIds.has(x.id));
+  if(!pending.length){toast('Nothing to import: all trip IDs already exist.');return;}
+  if(!window.confirm(`Import ${pending.length} new trips? Existing trips will not be overwritten; names will be renumbered by airline and aircraft where required.`))return;
+  let imported=0,skipped=0;
+  for(let i=0;i<pending.length;i+=150) {
+    const chunk=pending.slice(i,i+150);
+    const result=await numberedMutation(async api=>{
+      let added=0,notAdded=0;
+      for(const entry of chunk) {
+        const already=await api.getTrip(entry.id);
+        if(already){notAdded++;continue;}
+        const {id,...data}=entry;
+        if(data.status==='active') {
+          try {await api.moveSlot(null,id,data.region);}
+          catch(err){notAdded++;continue;}
+        }
+        api.put(id,data);added++;
+      }
+      return {added,notAdded};
+    });
+    imported+=result.added;skipped+=result.notAdded;
   }
-  for(const t of pending.filter(t=>t.status==='active')){
-    try{const {id,...values}=t;await saveTrip(values,id,true);activeImported++;}
-    catch(e){activeSkipped++;console.warn('Active trip could not import',t.id,e);}
-  }
-  toast(`Import finished: ${inserted+activeImported} trips added.${activeSkipped?' '+activeSkipped+' active trip(s) skipped because a region is already occupied.':''}`);
+  toast(`Imported ${imported} trips and generated sequential names.${skipped?' '+skipped+' already existing or conflicting active trips skipped.':''}`);
 }
-

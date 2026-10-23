@@ -26,14 +26,18 @@ export function normaliseTrip(input) {
     airline: input.airline == null ? 'Unassigned' : String(input.airline).trim(),
     region: String(input.region ?? ''), status: String(input.status ?? 'planned'),
     notes: String(input.notes ?? '').trim(),
+    tripNumber: input.tripNumber == null || input.tripNumber === '' ? null : Number(input.tripNumber),
+    numberManual: input.numberManual === true,
+    numberLocked: input.numberLocked === true,
     legs: Array.isArray(input.legs) ? input.legs.map(cleanLeg) : [],
   };
   for (const field of ['sourceSheet', 'sourceRow', 'sourceColumn', 'importKey']) {
     if (input[field] !== undefined && input[field] !== null) out[field] = input[field];
   }
-  if (!out.title) throw new Error('A trip title is required.');
   if (!out.aircraft) throw new Error('Choose an aircraft type (or Unspecified).');
   if (!out.airline) throw new Error('Enter the airline for this trip.');
+  if (out.tripNumber !== null && (!Number.isSafeInteger(out.tripNumber) || out.tripNumber < 1 || out.tripNumber > 100000)) throw new Error('Trip number must be a positive whole number.');
+  if (out.numberManual && out.tripNumber === null) throw new Error('Choose a trip number before locking it manually.');
   if (!REGIONS.some(r => r.id === out.region)) throw new Error('Choose a valid region.');
   if (!STATUS.includes(out.status)) throw new Error('Invalid trip status.');
   if (!out.legs.length) throw new Error('Add at least one flight leg.');

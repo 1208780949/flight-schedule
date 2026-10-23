@@ -56,6 +56,18 @@ service cloud.firestore {
           || getAfter(tripPath(uid, resource.data.tripId)).data.status != 'active'
           || getAfter(tripPath(uid, resource.data.tripId)).data.region != region);
     }
+    // v1.2: serialize airline/aircraft numbering across browsers and imports.
+    // Update this rule before deploying the new website version.
+    match /users/{uid}/metadata/{metadataId} {
+      allow read: if isOwner(uid) && metadataId == 'numbering';
+      allow create: if isOwner(uid) && metadataId == 'numbering'
+        && request.resource.data.keys().hasAll(['revision', 'updatedAt'])
+        && request.resource.data.keys().hasOnly(['revision', 'updatedAt'])
+        && request.resource.data.revision == 1;
+      allow update: if isOwner(uid) && metadataId == 'numbering'
+        && request.resource.data.keys().hasOnly(['revision', 'updatedAt'])
+        && request.resource.data.revision == resource.data.revision + 1;
+    }
     // All other paths remain inaccessible.
   }
 }

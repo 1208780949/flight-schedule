@@ -1,90 +1,62 @@
-# Flight Schedule v1.0 — GitHub Pages + Firebase Firestore
+# Flight Schedule v1.2 — airline/aircraft trip numbering and partial archiving
 
-A private, mobile-friendly flight itinerary planner. Flight plans are organised by **status**, **region**, and **aircraft type**. Online saving and multi-device synchronization use Firebase Firestore.
+Static website for GitHub Pages, using Firebase Authentication + Firestore for private multi-device data. Firebase project is already configured in `firebase.js` for `flight-schedule-5704d`.
 
-## Main rules
+## What changed in v1.2
 
-- Three distinct regions: **North America**, **Europe**, **Rest of World**.
-- Every trip belongs to one region and one aircraft type.
-- At most **one active trip in each region** (three possible simultaneously). A Firestore transaction reserves each active region's `activeSlots` document to prevent activation collisions between browsers.
-- Planned and archived trips can contain unlimited itineraries in any region and aircraft type.
-- Each itinerary contains ordered flight legs: flight number, callsign, departure, arrival, notes, and a completion checkbox.
-- Planned → Active → Archived; archived trips can be moved back to planning or reactivated.
+- **Generated trip names:** `Airline Aircraft Trip n`, for example `Aer Lingus B737 Trip 2`. Users edit the **Trip number (n)**, not the title text. Sequence is shared across all statuses (Planned, Active, Archived) and geographic regions for the same airline + aircraft combination, beginning at 1.
+- **Manually reserved trip numbers:** Entering a different trip number in the editor automatically ticks **Reserve this number manually**. The checkbox is saved in Firestore as `numberManual`. Manual numbers must be unique and in the interval **1 to the number of trips in that airline/aircraft group** (including the trip being created). A conflict with another manually reserved/archived number is reported as an error; other automatically numbered trips fill available numbers 1..N. Untick the checkbox to return a nonarchived trip to automatic allocation.
+- **Existing trips:** Legacy v1.0/v1.1 titles are automatically converted on sign-in and all trip IDs, notes, statuses, flight legs and progress remain intact. Auto-assigned initial numbers are deterministic, using creation time and ID where available. Airline `Unassigned` / aircraft `Unspecified` continue to work until edited.
+- **No redundant airline label:** Cards and trip details show the airline in the generated trip title; the separate `Airline: ...` label has been removed. Airline filtering remains available.
+- **Archive completed legs:** On a *Planned* or *Active* trip, mark at least one leg complete, then choose **Archive completed legs**. When some legs are unfinished, an atomic Firestore transaction (1) archives only the completed legs under the **original trip number**, (2) creates a **new trip with number n+1** containing only the uncompleted legs, and (3) transfers the active-region slot to the successor if the original was active. Legs retain their original relative order and metadata, and the new trip keeps the airline, aircraft, region and notes. Archive the entire trip when all legs are complete. The archived original's number is protected as `numberLocked`.
+- **Online concurrency:** A per-user Firestore numbering revision document serializes renumbering, edits, deletion, bulk import and trip splitting. Regional active slots are still protected transactionally.
+- **Backups:** v1.2 exports `flight-planner-backup-v3` with airline, trip number and manual/archive locking fields. Earlier v1/v2 import formats remain supported. Do not re-import the old workbook just to get generated names.
 
-## 1. Firebase setup
+## Important: upgrading existing GitHub Pages installation
 
-This app is configured for Firebase project `flight-schedule-5704d` in `firebase.js`.
+**Make a backup from the current site first:** sign in → **↓ Backup**. Your existing Firestore data is **not** deleted by the upgrade. There is no need to create a new Firebase project or to re-import the Excel workbook.
 
-1. At <https://console.firebase.google.com/> open **flight-schedule-5704d**.
-2. **Build → Firestore Database**: create the default database if you have not already done so. Start in **production mode**, not test mode.
-3. **Build → Authentication → Sign-in method**: enable **Email/Password**.
-4. **Authentication → Users → Add user**: create your own email-and-password account. The website has *sign-in only*; it does not expose public account registration.
-5. **Firestore Database → Rules**: replace the default text with the complete contents of [`firestore.rules`](./firestore.rules), then **Publish**. These rules restrict each account to its own `users/{uid}/...` records and cross-check the active-region slots and trip statuses atomically.
-6. If Firebase Authentication reports that your GitHub Pages site is not an authorized domain, add `<github-username>.github.io` under **Authentication → Settings → Authorized domains**.
+### 1. Update Firestore security rules FIRST
 
-**Important:** Never publish a service-account JSON file or a Firebase private key. `firebase.js` contains only the standard public web-app config. Protect the data with Firestore security rules.
+This is **required** for v1.2. The app creates a new owner-only metadata document at `users/{uid}/metadata/numbering` to coordinate trip numbers across open browsers. The old v1.1 Firestore rules denied access to that path.
 
-## 2. Publish on GitHub Pages
+1. Open [Firebase Console](https://console.firebase.google.com/) → project **flight-schedule-5704d**.
+2. Open **Firestore Database → Rules**.
+3. Replace the rules there with the entire new **`firestore.rules`** in this ZIP and click **Publish**.
+4. Leave Firebase Authentication and its users unchanged.
 
-1. Create a new GitHub repository, e.g. `flight-schedule`. For free Pages deployment on some plans, a **public** repo is needed, so **do not put your private import JSON file in the repository**.
-2. Copy the files in **this application folder only** to the repository root (`index.html`, `app.js`, `domain.mjs`, `firebase.js`, `styles.css`, `favicon.svg`, `firestore.rules`, `.nojekyll`, and `README.md`). You can use **Add file → Upload files** on GitHub after extracting the ZIP, or Git locally.
-3. Open the repository's **Settings → Pages → Build and deployment → Deploy from a branch**. Choose your default branch (`main`) and **/(root)**, then Save.
-4. The website will be available at `https://<github-username>.github.io/flight-schedule/` after GitHub publishes it.
-5. Open the site, sign in using the email/password you added in Firebase Authentication.
+### 2. Update the GitHub repository
 
-No Node/npm build and no server required; the application imports pinned Firebase JavaScript SDK modules from Google's CDN.
+Go to the repository root on the `main` branch. Use **Add file → Upload files**, and upload these files from the *inside* of the extracted folder:
 
-## 3. Import the original Excel schedule
+- `app.js` — replace existing file
+- `domain.mjs` — replace existing file
+- **`numbering.mjs` — NEW file, must be uploaded**
+- `index.html` — replace existing file
+- `styles.css` — replace existing file
+- `README.md` — optional replacement
 
-**Do not add `flight_schedule_import_PRIVATE.json` to your public GitHub repository.** It contains route history extracted from your workbook.
+Keep your existing `firebase.js`, `favicon.svg`, and `.nojekyll` unchanged. Commit to `main`. GitHub Pages settings stay **Deploy from branch / main / (root)**. Once the deployment finishes, refresh the website using **Ctrl+Shift+R** and check the footer says **Flight Schedule v1.2**.
 
-1. Download the **separate** `flight_schedule_import_PRIVATE.json` file alongside this ZIP.
-2. Open the published website and sign in.
-3. Click **↑ Import** and choose that private JSON file.
-4. Confirm. New trips will be uploaded directly from your browser to **your account's Firestore collection**. Data does not pass through GitHub.
-5. The importer is idempotent: existing trip IDs are skipped rather than overwritten, so you can safely choose the same file again.
-6. Optionally delete the local import JSON file after verifying the migration, or keep it as a private backup.
+### 3. Verify and back up
 
-The migration converts the three parallel itinerary columns to three region categories. It also imports DC-3 / DC-6 / Aero Lloyd / A350 / Long Haul / Extinction File Tour sheets where possible. The **Active** and **Completed** worksheets don't contain aircraft type information, so their trips import with aircraft `Unspecified`, which you can edit later. The exceptional tour-format sheets did not all have geographic group columns; their regions are inferred conservatively from departure and flagged for review. Consult the separate migration report.
+Sign in. Initial trip-number migration runs automatically. In a group containing several trips for the same airline and aircraft, all should display generated names `Trip 1`, `Trip 2`, ... regardless of region or status. Once migrated, download another backup. If migration reports **Permission denied**, revisit the Firestore rules from Step 1.
 
-## 4. Day-to-day use
+## Numbering/archiving edge cases
 
-- Choose **Flight planning**, **Active trips**, or **Flight archive** in the left-hand sidebar.
-- Use **All regions / North America / Europe / Rest of World** across all three views.
-- Select an aircraft type in the sidebar, including `Unspecified` for unclassified legacy trips.
-- Create a trip and multiple legs, change their order in **Edit itinerary**, and save.
-- Activate a planned trip. If that region is occupied, move the active trip to planning or archive it first.
-- In the active trip, click the checkboxes after flying each leg. Then click **Archive completed trip**. If some legs are unchecked, **Complete & archive trip** asks for explicit confirmation before marking them all complete.
-- Click **↓ Backup** regularly. The JSON backup is also supported by the import feature.
+- If a requested manual number is outside `1..N`, saving fails; it never silently uses an invalid number.
+- If a trip number has already been *manually reserved or protected by an archive*, saving/splitting into that number fails; the user must first release or modify that reservation. Automatically numbered trips can be reassigned.
+- Splitting an active trip keeps its successor **active in the same region**. This does not open a slot for a second active trip there; the normal one-active-per-region rule continues to apply.
+- Completed legs can be non-contiguous. The archive receives *all checked legs in their original order*, while the successor receives *all unchecked legs in their original order*.
+- If no leg is checked, the Archive button is disabled. If all legs are checked, archiving does not create an empty successor.
+- Protected archived trip numbers can prevent deleting/reclassifying a trip if it would make a protected number greater than the resulting group size. The app reports this rather than breaking the sequence. To reorganise that group, change relevant trip numbers/reservations first.
+- No modification is made to the original `Flight Schedule.xlsx` file, and no private Excel-derived JSON is included in the GitHub ZIP.
+- This implementation is designed for a personal database; renumbering transactions support up to 450 document writes per operation. A very large archive would need chunked migration/server-side allocation.
 
-## 5. Cloud data structure
+## Data model
 
-```
-users/{firebase-auth-uid}/trips/{trip-id}
-  title, aircraft, region, status, notes
-  legs: [ {flightNumber, callsign, departure, arrival, notes, completed}, ... ]
-  createdAt, updatedAt, activatedAt, archivedAt
-  sourceSheet, sourceRow, sourceColumn, importKey (only for migrated data)
+`users/{uid}/trips/{tripId}` holds `airline`, `aircraft`, `region`, `status`, `legs`, `tripNumber`, `numberManual`, `numberLocked`, and generated `title`, plus previous timestamp/source metadata. `users/{uid}/activeSlots/{region}` holds the active trip ID. `users/{uid}/metadata/numbering` holds a monotonically increasing `revision` as a concurrency guard.
 
-users/{firebase-auth-uid}/activeSlots/north-america
-users/{firebase-auth-uid}/activeSlots/europe
-users/{firebase-auth-uid}/activeSlots/rest-of-world
-  tripId: the single active itinerary ID
-```
+## Development tests
 
-The Firestore document limit is 1 MiB. A maximum of 300 legs per trip is enforced by this first version. Larger itineraries should be split into multiple trips in the same region.
-
-## 6. Backup and privacy
-
-- Your trip documents are scoped to the Firebase Authentication user ID by security rules. Signing in with a **different** Firebase account gives that account a separate schedule.
-- GitHub hosts **only the code**. Private flight data must be imported through the website, not committed to the repository.
-- Firebase Spark usage quotas apply. The app doesn't require billed Firebase services.
-- Download JSON backups regularly. The free tier does not supply automated managed backups.
-- **Do not open `index.html` as a `file://` URL**; use GitHub Pages or a local HTTP server. For a local test run `python -m http.server 8000` in the application folder and open `http://localhost:8000`. `localhost` may need to be added as an authorized domain in Authentication settings in some configurations.
-
-## Limitations / next steps
-
-- There is no automatic live import of `Flight Schedule.xlsx`; the provided private migration JSON already contains the extracted trips.
-- The web app is optimized for a personal user. No team collaboration or cross-account schedule merging is provided.
-- Imported historical data is not guaranteed perfectly clean; review the `migration_report.txt` supplied separately, especially cross-region tours, uncertain ICAO labels and disjoint route sections.
-- The interface saves changes online, but actual sign-in and database access require your Firebase project to be configured as described above.
+`node test-numbering.mjs` checks pure numbering, manual pinning and archived split numbering. `python test-ui.py` uses an offline Firebase mock and Chromium Playwright to exercise the UI. No live connection to the user's Firebase project is made by these tests.
