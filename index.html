@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#0c1526" />
+  <meta name="description" content="Private cloud-synced flight itinerary planner" />
+  <title>Flight Schedule — Planner</title>
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div id="authScreen" class="auth-screen">
+    <section class="auth-card">
+      <div class="brand-lockup"><span class="brand-icon">✈</span><span>FLIGHT <strong>SCHEDULE</strong></span></div>
+      <div class="eyebrow">YOUR PERSONAL OPERATIONS DESK</div>
+      <h1>Welcome back.</h1>
+      <p>Access your flight plans from anywhere. All changes are securely saved in Firestore.</p>
+      <form id="loginForm" class="form-stack">
+        <label>Email address<input id="loginEmail" type="email" autocomplete="username" required placeholder="you@example.com" /></label>
+        <label>Password<input id="loginPassword" type="password" autocomplete="current-password" required placeholder="Your Firebase password" /></label>
+        <button id="loginButton" type="submit" class="btn primary block">Sign in <span>→</span></button>
+      </form>
+      <p class="auth-error" id="authError" role="alert"></p>
+      <p class="fine-print">Your account must first be created under Firebase Console → Authentication → Users.</p>
+    </section>
+  </div>
+
+  <div id="mainApp" class="app-shell hidden">
+    <aside class="sidebar">
+      <div class="brand-lockup"><span class="brand-icon">✈</span><span>FLIGHT <strong>SCHEDULE</strong></span></div>
+      <div class="sidebar-label">WORKSPACE</div>
+      <nav class="sidebar-nav" aria-label="Trip status">
+        <button data-view="planned" class="nav-item selected"><span class="nav-icon">▦</span> Flight planning <span id="navPlanned" class="nav-count">0</span></button>
+        <button data-view="active" class="nav-item"><span class="nav-icon">◉</span> Active trips <span id="navActive" class="nav-count">0</span></button>
+        <button data-view="archived" class="nav-item"><span class="nav-icon">✓</span> Flight archive <span id="navArchived" class="nav-count">0</span></button>
+      </nav>
+      <div class="sidebar-separator"></div>
+      <div class="sidebar-label">AIRCRAFT TYPES</div>
+      <div id="aircraftFilters" class="aircraft-filters"></div>
+      <div class="sidebar-bottom">
+        <div class="secure-note"><span class="green-dot"></span><span id="connectionStatus">Connecting to Firestore…</span></div>
+        <div class="account-line"><span id="accountEmail">—</span><button id="signOutButton" class="text-button">Sign out</button></div>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <header class="topbar">
+        <div><span class="breadcrumbs">OPERATIONS / <span id="breadcrumbPage">PLANNING</span></span><h1 id="pageTitle">Flight planning</h1><p id="pageSubtitle" class="subheading">Build and organise trips for every aircraft type.</p></div>
+        <div class="top-actions"><button id="importButton" class="btn neutral">↑ Import</button><button id="exportButton" class="btn neutral">↓ Backup</button><button id="newTripButton" class="btn primary"><span class="plus-icon">+</span> New trip</button></div>
+      </header>
+      <section id="stats" class="stats-grid" aria-label="Schedule overview"></section>
+      <section class="board-toolbar"><div class="board-title"><h2 id="boardTitle">Planned itineraries</h2><span id="boardCount" class="board-count"></span></div><div id="regionFilters" class="region-tabs" role="group" aria-label="Region filter"></div></section>
+      <section id="board" class="board" aria-live="polite"></section>
+      <footer class="footer-note">Flight Schedule v1.0 · Secure cloud storage via Firebase Firestore · Changes sync automatically</footer>
+    </main>
+  </div>
+  <div id="modalRoot"></div>
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+  <input type="file" id="importFile" accept=".json,application/json" hidden />
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

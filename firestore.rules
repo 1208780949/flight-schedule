@@ -1,0 +1,61 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isOwner(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+    function tripPath(uid, tripId) {
+      return /databases/$(database)/documents/users/$(uid)/trips/$(tripId);
+    }
+    function slotPath(uid, region) {
+      return /databases/$(database)/documents/users/$(uid)/activeSlots/$(region);
+    }
+    function slotMatches(uid, region, tripId) {
+      return existsAfter(slotPath(uid, region))
+        && getAfter(slotPath(uid, region)).data.tripId == tripId;
+    }
+    function validTrip() {
+      return request.resource.data.keys().hasAll(['title', 'aircraft', 'region', 'status', 'legs'])
+        && request.resource.data.title is string
+        && request.resource.data.aircraft is string
+        && request.resource.data.legs is list
+        && request.resource.data.legs.size() > 0
+        && request.resource.data.legs.size() <= 300
+        && request.resource.data.region in ['north-america', 'europe', 'rest-of-world']
+        && request.resource.data.status in ['planned', 'active', 'archived'];
+    }
+    // Access is isolated by Firebase Authentication UID.
+    match /users/{uid}/trips/{tripId} {
+      allow read: if isOwner(uid);
+      allow create: if isOwner(uid) && validTrip()
+        && (request.resource.data.status != 'active'
+          || slotMatches(uid, request.resource.data.region, tripId));
+      allow update: if isOwner(uid) && validTrip()
+        && (request.resource.data.status != 'active'
+          || slotMatches(uid, request.resource.data.region, tripId))
+        && (resource.data.status != 'active'
+          || (request.resource.data.status == 'active'
+            && resource.data.region == request.resource.data.region)
+          || !slotMatches(uid, resource.data.region, tripId));
+      allow delete: if isOwner(uid) && (resource.data.status != 'active'
+        || !slotMatches(uid, resource.data.region, tripId));
+    }
+    // Each region has a single atomic 'activeSlots' record.
+    // Both the trip and its slot must agree in the post-transaction state.
+    match /users/{uid}/activeSlots/{region} {
+      allow read: if isOwner(uid);
+      allow create, update: if isOwner(uid)
+        && region in ['north-america', 'europe', 'rest-of-world']
+        && request.resource.data.keys().hasOnly(['tripId'])
+        && request.resource.data.tripId is string
+        && existsAfter(tripPath(uid, request.resource.data.tripId))
+        && getAfter(tripPath(uid, request.resource.data.tripId)).data.status == 'active'
+        && getAfter(tripPath(uid, request.resource.data.tripId)).data.region == region;
+      allow delete: if isOwner(uid)
+        && (!existsAfter(tripPath(uid, resource.data.tripId))
+          || getAfter(tripPath(uid, resource.data.tripId)).data.status != 'active'
+          || getAfter(tripPath(uid, resource.data.tripId)).data.region != region);
+    }
+    // All other paths remain inaccessible.
+  }
+}
