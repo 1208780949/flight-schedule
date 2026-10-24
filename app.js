@@ -6,14 +6,16 @@ import {
 } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js';
 import { firebaseConfig } from './firebase.js';
 import { REGIONS, regionName, esc, progress, normaliseTrip, canActivate, describeRoute, grouped, airlineName } from './domain.mjs';
-import { assignNumbers, comboKey, tripTitle, splitLegs, validNumber } from './numbering.mjs';
+import { assignNumbers, comboKey, tripTitle, validNumber } from './numbering.mjs';
 import { installLegKeyboardNavigation } from './leg-keyboard.mjs';
+import { inspectArchive, validateArchive, validateArchivedTrip } from './archive-integrity.mjs';
+import { cleanGroups, createGroup, renameGroup, deleteGroup, moveType, assignedGroup, matchesAircraft, UNGROUPED } from './aircraft-groups.mjs';
 
 const firebase = initializeApp(firebaseConfig);
 const auth = getAuth(firebase);
 const db = getFirestore(firebase);
 const $ = id => document.getElementById(id);
-const state = { numberingBusy:false, user: null, unsubscribe: null, trips: [], loading: true, view: 'planned', region: 'all', aircraft: 'all', airline: 'all', modalTripId: null, editorLegs: [] };
+const state = { numberingBusy:false, user: null, unsubscribe: null, unsubscribeGroups: null, trips: [], groups: [], loading: true, view: 'planned', region: 'all', aircraft: 'all', aircraftGroup: null, airline: 'all', modalTripId: null, editorLegs: [] };
 const views = {
   planned: ['PLANNING', 'Flight planning', 'Build and organise itineraries for every aircraft type.', 'Planned itineraries'],
   active: ['ACTIVE FLIGHTS', 'Active trips', 'One active itinerary per region. Track progress leg by leg.', 'Currently flying'],
@@ -38,15 +40,21 @@ function tripsRef() { return collection(db, 'users', state.user.uid, 'trips'); }
 function tripRef(id) { return doc(db, 'users', state.user.uid, 'trips', id); }
 function slotRef(region) { return doc(db, 'users', state.user.uid, 'activeSlots', region); }
 function numberingRef() { return doc(db, 'users', state.user.uid, 'metadata', 'numbering'); }
+function groupsRef() { return doc(db, 'users', state.user.uid, 'settings', 'aircraftGroups'); }
 
 onAuthStateChanged(auth, (user) => {
   if (state.unsubscribe) { state.unsubscribe(); state.unsubscribe = null; }
-  state.user = user; state.trips = []; state.loading = true; state.aircraft = 'all'; state.airline = 'all'; closeModal();
+  if (state.unsubscribeGroups) { state.unsubscribeGroups(); state.unsubscribeGroups = null; }
+  state.user = user; state.trips = []; state.groups = []; state.loading = true; state.aircraft = 'all'; state.aircraftGroup = null; state.airline = 'all'; closeModal();
   $('authScreen').classList.toggle('hidden', !!user);
   $('mainApp').classList.toggle('hidden', !user);
   if (!user) return;
   $('accountEmail').textContent = user.email || 'Signed in';
   $('connectionStatus').textContent = 'Connecting to Firestore…';
+  state.unsubscribeGroups = onSnapshot(groupsRef(), snapshot => {
+    try { state.groups = cleanGroups(snapshot.exists() ? snapshot.data().groups : []); render(); }
+    catch (error) { toast(`Cannot load aircraft groups: ${errorMessage(error)}`, true); }
+  }, error => toast(`Aircraft group sync failed: ${errorMessage(error)}`, true));
   state.unsubscribe = onSnapshot(tripsRef(), snapshot => {
     state.loading = false;
     state.trips = snapshot.docs.map(x => ({ ...x.data(), id: x.id }));
@@ -95,15 +103,25 @@ function render() {
   ].map(([label, value, desc]) => `<div class="stat-card"><div class="stat-label">${label}</div><div class="stat-value">${value}</div><div class="stat-description">${desc}</div></div>`).join('');
   const known = [...new Set(state.trips.map(t => t.aircraft))].sort((a,b) => a.localeCompare(b,undefined,{numeric:true}));
   if (state.aircraft !== 'all' && !known.includes(state.aircraft)) state.aircraft = 'all';
-  $('aircraftFilters').innerHTML = `<button data-aircraft="all" class="aircraft-item ${state.aircraft === 'all' ? 'selected' : ''}"><span>▦</span> All aircraft <span class="aircraft-count">${state.trips.length}</span></button>` +
-    known.map(a => `<button data-aircraft="${esc(a)}" class="aircraft-item ${state.aircraft === a ? 'selected' : ''}"><span>✈</span> ${esc(a)} <span class="aircraft-count">${state.trips.filter(t => t.aircraft === a).length}</span></button>`).join('');
+  if (state.aircraftGroup && state.aircraftGroup !== UNGROUPED && !state.groups.some(g=>g.id===state.aircraftGroup)) state.aircraftGroup = null;
+  const countFor = type => state.trips.filter(t=>t.aircraft===type).length;
+  const typeRow = a => `<div class="aircraft-type-row" draggable="true" data-drag-aircraft="${esc(a)}" title="Drag ${esc(a)} into another group"><span class="drag-handle" aria-hidden="true">⠿</span><button data-aircraft="${esc(a)}" class="aircraft-item aircraft-child ${state.aircraft===a?'selected':''}" title="Show trips for ${esc(a)}"><span>✈</span> ${esc(a)} <span class="aircraft-count">${countFor(a)}</span></button><button class="move-aircraft" data-move-aircraft="${esc(a)}" aria-label="Move ${esc(a)} into a group" title="Move to group">↗</button></div>`;
+  const groupedTypes = new Set(state.groups.flatMap(g => g.types.map(t=>t.toLocaleLowerCase('en'))));
+  const ungrouped = known.filter(a=>!groupedTypes.has(a.toLocaleLowerCase('en')));
+  const renderFolder = (id,name,types,ungroupedFolder=false) => {
+    const folderCount=types.reduce((total,a)=>total+countFor(a),0);
+    return `<section class="aircraft-folder" data-drop-group="${esc(id)}"><div class="folder-head"><button data-group="${esc(id)}" class="aircraft-item folder-filter ${state.aircraftGroup===id&&state.aircraft==='all'?'selected':''}" title="Filter by ${esc(name)}"><span>${ungroupedFolder?'▤':'▾'}</span> ${esc(name)} <span class="aircraft-count">${folderCount}</span></button>${ungroupedFolder?'':`<button data-rename-group="${esc(id)}" class="folder-action" title="Rename ${esc(name)}" aria-label="Rename ${esc(name)}">✎</button><button data-delete-group="${esc(id)}" class="folder-action" title="Delete ${esc(name)} group (flights unchanged)" aria-label="Delete ${esc(name)} group">×</button>`}</div><div class="folder-children">${types.length?types.map(typeRow).join(''):`<div class="folder-drop-hint">Drag aircraft here</div>`}</div></section>`;
+  };
+  $('aircraftFilters').innerHTML = `<button data-aircraft="all" class="aircraft-item ${state.aircraft==='all' && !state.aircraftGroup?'selected':''}"><span>▦</span> All aircraft <span class="aircraft-count">${state.trips.length}</span></button>`+
+    state.groups.map(g=>renderFolder(g.id,g.name,g.types.filter(a=>known.some(k=>k.toLocaleLowerCase('en')===a.toLocaleLowerCase('en'))))).join('')+
+    renderFolder(UNGROUPED,'Ungrouped',ungrouped,true);
   $('regionFilters').innerHTML = [{id:'all',label:'All regions'},...REGIONS].map(r => `<button data-region="${r.id}" class="region-tab ${state.region === r.id ? 'selected' : ''}">${r.label}</button>`).join('');
   const airlines = [...new Set(state.trips.map(t => airlineName(t.airline)))].sort((a,b) => a.localeCompare(b));
   if (state.airline !== 'all' && !airlines.includes(state.airline)) state.airline = 'all';
   $('airlineFilter').innerHTML = '<option value="all">All airlines</option>' +
     airlines.map(a => `<option value="${esc(a)}">${esc(a)}</option>`).join('');
   $('airlineFilter').value = state.airline;
-  const visible = grouped(state.trips, state.view, state.aircraft, state.region, state.airline);
+  const visible = grouped(state.trips, state.view, 'all', state.region, state.airline).filter(t=>matchesAircraft(t.aircraft,state.aircraft,state.aircraftGroup,state.groups));
   $('boardCount').textContent = `${visible.length} ${visible.length === 1 ? 'trip' : 'trips'}`;
   if (state.loading) { $('board').innerHTML = '<div class="loading">Loading schedules from Firestore…</div>'; return; }
   const regions = REGIONS.filter(r => state.region === 'all' || state.region === r.id);
@@ -128,10 +146,93 @@ document.addEventListener('click', async e => {
   const button = e.target.closest('button'); if (!button) return;
   if (button.dataset.view) { state.view = button.dataset.view; render(); return; }
   if (button.dataset.region) { state.region = button.dataset.region; render(); return; }
-  if (button.dataset.aircraft !== undefined) { state.aircraft = button.dataset.aircraft; render(); return; }
+  if (button.dataset.aircraft !== undefined) { state.aircraft = button.dataset.aircraft; state.aircraftGroup=null; render(); return; }
+  if (button.dataset.group !== undefined) { state.aircraft='all'; state.aircraftGroup=button.dataset.group; render(); return; }
+  if (button.dataset.createGroup !== undefined) { await promptCreateGroup(); return; }
+  if (button.dataset.renameGroup !== undefined) { await promptRenameGroup(button.dataset.renameGroup); return; }
+  if (button.dataset.deleteGroup !== undefined) { await promptDeleteGroup(button.dataset.deleteGroup); return; }
+  if (button.dataset.moveAircraft !== undefined) { await promptMoveAircraft(button.dataset.moveAircraft); return; }
   if (button.dataset.newRegion) { openEditor(null,{region:button.dataset.newRegion}); return; }
   if (button.dataset.open) { openDetail(button.dataset.open); return; }
   if (button.dataset.activate) { await changeStatus(button.dataset.activate,'active'); return; }
+});
+
+// Aircraft folders are private user settings, live-synced on all devices.
+// Transactions re-read the latest settings to prevent two browsers overwriting each other.
+async function modifyGroups(change) {
+  if(!state.user) throw new Error('Please sign in.');
+  await runTransaction(db, async tx => {
+    const ref=groupsRef();const snapshot=await tx.get(ref);
+    const before=cleanGroups(snapshot.exists()?snapshot.data().groups:[]);
+    const updated=cleanGroups(change(before));
+    tx.set(ref,{groups:updated,updatedAt:serverTimestamp()});
+  });
+}
+async function promptCreateGroup() {
+  const name=window.prompt('Name of the new aircraft group (e.g. Boeing, Airbus, Classic Jets):');
+  if(name===null)return;
+  try {
+    const id=doc(tripsRef()).id;
+    await modifyGroups(groups=>createGroup(groups,id,name));
+    state.aircraft='all';state.aircraftGroup=id;
+    toast(`Created aircraft group ${name.trim()}. Drag aircraft types into it.`);
+  }catch(e){toast(errorMessage(e),true);}
+}
+async function promptRenameGroup(id) {
+  const group=state.groups.find(g=>g.id===id);if(!group)return;
+  const name=window.prompt('New aircraft group name:',group.name);
+  if(name===null)return;
+  try {await modifyGroups(groups=>renameGroup(groups,id,name));toast('Aircraft group renamed.');}
+  catch(e){toast(errorMessage(e),true);}
+}
+async function promptDeleteGroup(id) {
+  const group=state.groups.find(g=>g.id===id);if(!group)return;
+  if(!window.confirm(`Delete the group "${group.name}"? Its aircraft types will become Ungrouped. No flights or trips will be deleted.`))return;
+  try {await modifyGroups(groups=>deleteGroup(groups,id));if(state.aircraftGroup===id)state.aircraftGroup=null;toast('Aircraft group deleted; trips were not changed.');}
+  catch(e){toast(errorMessage(e),true);}
+}
+async function promptMoveAircraft(type) {
+  const destinations=['Ungrouped',...state.groups.map(g=>g.name)].join(', ');
+  const defaultName=state.groups.find(g=>g.id===assignedGroup(state.groups,type))?.name||'Ungrouped';
+  const selected=window.prompt(`Move ${type} to which group? Enter a group name.
+Available: ${destinations}`,defaultName);
+  if(selected===null)return;
+  const target=selected.trim().toLocaleLowerCase('en')==='ungrouped'?UNGROUPED:state.groups.find(g=>g.name.toLocaleLowerCase('en')===selected.trim().toLocaleLowerCase('en'))?.id;
+  if(!target){toast('Unknown group name. Create the group first.',true);return;}
+  try {await modifyGroups(groups=>moveType(groups,type,target));toast(`${type} moved to ${selected.trim()}.`);}
+  catch(e){toast(errorMessage(e),true);}
+}
+const aircraftSidebar=$('aircraftFilters');
+aircraftSidebar.addEventListener('dragstart',e=>{
+  const row=e.target.closest('[data-drag-aircraft]');if(!row)return;
+  e.dataTransfer.setData('text/plain',row.dataset.dragAircraft);
+  e.dataTransfer.effectAllowed='move';row.classList.add('dragging');
+});
+aircraftSidebar.addEventListener('dragover',e=>{
+  const target=e.target.closest('[data-drop-group]');if(!target)return;
+  e.preventDefault();e.dataTransfer.dropEffect='move';
+  aircraftSidebar.querySelectorAll('.drag-over').forEach(el=>el.classList.remove('drag-over'));
+  target.classList.add('drag-over');
+});
+aircraftSidebar.addEventListener('dragleave',e=>{
+  const target=e.target.closest('[data-drop-group]');
+  if(target&&!target.contains(e.relatedTarget))target.classList.remove('drag-over');
+});
+aircraftSidebar.addEventListener('dragend',()=>{
+  aircraftSidebar.querySelectorAll('.drag-over,.dragging').forEach(el=>el.classList.remove('drag-over','dragging'));
+});
+aircraftSidebar.addEventListener('drop',async e=>{
+  const target=e.target.closest('[data-drop-group]');
+  if(!target)return;
+  e.preventDefault();
+  aircraftSidebar.querySelectorAll('.drag-over,.dragging').forEach(el=>el.classList.remove('drag-over','dragging'));
+  const type=e.dataTransfer.getData('text/plain');
+  if(!state.trips.some(t=>t.aircraft===type)){toast('Only known aircraft types can be dragged.',true);return;}
+  try {
+    await modifyGroups(groups=>moveType(groups,type,target.dataset.dropGroup));
+    const name=target.dataset.dropGroup===UNGROUPED?'Ungrouped':state.groups.find(g=>g.id===target.dataset.dropGroup)?.name||'group';
+    toast(`${type} moved to ${name}.`);
+  }catch(error){toast(errorMessage(error),true);}
 });
 
 // All renumbering changes are serialized by a per-account revision record. The server
@@ -231,6 +332,7 @@ async function ensureNumbering() {
 }
 async function saveTrip(nextInput, id, allowCreateId = false) {
   const next=normaliseTrip(nextInput);
+  validateArchivedTrip(next);
   const newId=id || doc(tripsRef()).id;
   await numberedMutation(async api=>{
     const old=await api.getTrip(newId);
@@ -242,6 +344,7 @@ async function saveTrip(nextInput, id, allowCreateId = false) {
 }
 async function changeStatus(id, to) {
   const trip = getTrip(id); if (!trip) return;
+  if (to === 'archived') { await archiveCompleted(id); return; }
   if (to === 'active' && !canActivate(state.trips, id, trip.region)) {
     toast(`You already have an active trip in ${regionName(trip.region)}.`,true);return;
   }
@@ -253,6 +356,7 @@ async function toggleLeg(id,index) {
   try {
     await runTransaction(db,async txn=>{
       const snap=await txn.get(ref);if(!snap.exists())throw new Error('Trip no longer exists.');
+      if(snap.data().status==='archived')throw new Error('Archived flights must remain complete. Move the trip to planning before changing completion.');
       const legs=snap.data().legs.map(x=>({...x}));
       if(!legs[index])throw new Error('That leg has changed. Reopen the trip.');
       legs[index].completed=!legs[index].completed;
@@ -278,7 +382,7 @@ async function archiveCompleted(id) {
       const current=await api.getTrip(id);
       if(!current)throw new Error('Trip no longer exists.');
       if(current.status==='archived')throw new Error('This trip is already archived.');
-      const {done,remaining}=splitLegs(current);
+      const {done,remaining}=validateArchive(current);
       // A legacy trip may not yet have a number when first opened.
       const now=assignNumbers(api.trips).find(t=>t.id===id);
       const n=now?.tripNumber;
@@ -310,22 +414,26 @@ function openDetail(id) {
   const t=getTrip(id);if(!t)return;
   state.modalTripId=id;
   const p=progress(t),pct=Math.round(100*p.done/p.total);
-  const body=`<div class="detail-head"><span class="pill">${esc(t.aircraft)}</span><span class="pill">${esc(regionName(t.region))}</span><span class="pill ${t.status==='active'?'green':'gray'}">${esc(t.status.toUpperCase())}</span></div><div class="trip-route" style="font-size:14px">${esc(describeRoute(t.legs))}</div>${t.notes?`<div class="detail-note">${esc(t.notes)}</div>`:''}<div class="detail-progress"><span>FLIGHT PROGRESS</span><span>${p.done} of ${p.total} legs · ${pct}%</span></div><div class="progress-track" style="height:7px;margin:2px 0 20px"><div class="progress-fill" style="width:${pct}%"></div></div><div style="overflow:auto"><table class="legs-table"><thead><tr><th>Done</th><th>Leg / Route</th><th>Flight number</th><th>Callsign</th><th>Notes</th></tr></thead><tbody>${t.legs.map((leg,i)=>`<tr class="${leg.completed?'completed-leg':''}"><td><button class="checkbox-button ${leg.completed?'checked':''}" data-check="${i}" aria-label="${leg.completed?'Unmark':'Mark'} leg ${i+1} complete">${leg.completed?'✓':''}</button></td><td>${i+1}. ${esc(leg.departure)} <span class="route-arrow">→</span> ${esc(leg.arrival)}</td><td>${esc(leg.flightNumber)||'—'}</td><td>${esc(leg.callsign)||'—'}</td><td class="leg-notes">${esc(leg.notes)||'—'}</td></tr>`).join('')}</tbody></table></div>`;
+  const integrity=inspectArchive(t);
+  const archivedInvalid=t.status==='archived' && t.legs.some(l=>l.completed!==true);
+  const archiveWarning=archivedInvalid ? `<div class="archive-warning" role="alert"><strong>Archived trip integrity issue.</strong> Every archived flight must be complete. Use Edit itinerary to correct its completion markers.</div>` :
+    t.status!=='archived'&&p.done>0&&!integrity.valid?`<div class="archive-warning" role="alert"><strong>Archive integrity check failed.</strong> ${esc(integrity.reason)}</div>`:'';
+  const body=`<div class="detail-head"><span class="pill">${esc(t.aircraft)}</span><span class="pill">${esc(regionName(t.region))}</span><span class="pill ${t.status==='active'?'green':'gray'}">${esc(t.status.toUpperCase())}</span></div><div class="trip-route" style="font-size:14px">${esc(describeRoute(t.legs))}</div>${t.notes?`<div class="detail-note">${esc(t.notes)}</div>`:''}<div class="detail-progress"><span>FLIGHT PROGRESS</span><span>${p.done} of ${p.total} legs · ${pct}%</span></div><div class="progress-track" style="height:7px;margin:2px 0 20px"><div class="progress-fill" style="width:${pct}%"></div></div>${archiveWarning}<div style="overflow:auto"><table class="legs-table"><thead><tr><th>Done</th><th>Leg / Route</th><th>Flight number</th><th>Callsign</th><th>Notes</th></tr></thead><tbody>${t.legs.map((leg,i)=>`<tr class="${leg.completed?'completed-leg':''}"><td><button class="checkbox-button ${leg.completed?'checked':''}" data-check="${i}" aria-label="${leg.completed?'Unmark':'Mark'} leg ${i+1} complete">${leg.completed?'✓':''}</button></td><td>${i+1}. ${esc(leg.departure)} <span class="route-arrow">→</span> ${esc(leg.arrival)}</td><td>${esc(leg.flightNumber)||'—'}</td><td>${esc(leg.callsign)||'—'}</td><td class="leg-notes">${esc(leg.notes)||'—'}</td></tr>`).join('')}</tbody></table></div>`;
   const actions=[];
   if(t.status==='planned')actions.push(`<button id="promoteButton" class="btn primary">Activate trip →</button>`);
-  if(t.status!=='archived')actions.push(`<button id="archiveButton" class="btn primary" ${p.done===0?'disabled':''}>${p.done===p.total?'Archive completed trip':'Archive completed legs'} →</button>`);
+  if(t.status!=='archived')actions.push(`<button id="archiveButton" class="btn primary" ${!integrity.valid?'disabled title="Complete a consecutive prefix of legs before archiving"':''}>${p.done===p.total?'Archive completed trip':'Archive completed legs'} →</button>`);
   if(t.status==='active'||t.status==='archived')actions.push('<button id="returnPlanningButton" class="btn neutral">Move to planning</button>');
   if(t.status==='archived')actions.push('<button id="reactivateButton" class="btn neutral">Reactivate</button>');
   const footer=`<button id="deleteButton" class="btn danger small">Delete</button><div class="footer-actions"><button id="editButton" class="btn neutral">Edit itinerary</button>${actions.join('')}</div>`;
   modalHTML(t.title,'TRIP DETAILS',body,footer);
-  $('modalRoot').querySelectorAll('[data-check]').forEach(b=>b.addEventListener('click',async()=>{b.disabled=true;await toggleLeg(id,Number(b.dataset.check));}));
+  $('modalRoot').querySelectorAll('[data-check]').forEach(b=>{if(t.status==='archived'){b.disabled=true;b.title='Archived flights must remain complete';}else b.addEventListener('click',async()=>{b.disabled=true;await toggleLeg(id,Number(b.dataset.check));});});
   $('editButton').addEventListener('click',()=>openEditor(id));$('deleteButton').addEventListener('click',()=>deleteTrip(id));
   $('promoteButton')?.addEventListener('click',()=>changeStatus(id,'active'));
   $('returnPlanningButton')?.addEventListener('click',()=>changeStatus(id,'planned'));
   $('reactivateButton')?.addEventListener('click',()=>changeStatus(id,'active'));
   $('archiveButton')?.addEventListener('click',()=>{
     const current=getTrip(id);if(!current)return;
-    const {done,remaining}=splitLegs(current);
+    const {done,remaining}=validateArchive(current);
     const detail=remaining.length?`Archive ${done.length} completed legs under the current trip number and create a new trip for the ${remaining.length} unfinished legs?`:`Archive this completed trip (${done.length} legs)?`;
     if(window.confirm(detail))void archiveCompleted(id);
   });
@@ -412,21 +520,29 @@ function backup() {
   if(!state.user||state.loading)return;
   const contents=state.trips.map(t=>({id:t.id,...normaliseTrip(t)}));
   const today=new Date().toISOString().slice(0,10);
-  saveJSON(`flight-schedule-backup-${today}.json`,{format:'flight-planner-backup-v3',exportedAt:new Date().toISOString(),trips:contents});
+  saveJSON(`flight-schedule-backup-${today}.json`,{format:'flight-planner-backup-v4',exportedAt:new Date().toISOString(),aircraftGroups:state.groups,trips:contents});
   toast(`Backup downloaded (${contents.length} trips). Keep it in a private location.`);
 }
 async function importFile(file) {
   if(!state.user)throw new Error('You must sign in first.');
   if(file.size>15_000_000)throw new Error('Import file exceeds 15 MB.');
   const raw=JSON.parse(await file.text());
-  if(!['flight-planner-v1','flight-planner-v2','flight-planner-backup-v1','flight-planner-backup-v2','flight-planner-backup-v3'].includes(raw.format)||!Array.isArray(raw.trips))throw new Error('Unsupported Flight Schedule import/backup file.');
+  if(!['flight-planner-v1','flight-planner-v2','flight-planner-backup-v1','flight-planner-backup-v2','flight-planner-backup-v3','flight-planner-backup-v4'].includes(raw.format)||!Array.isArray(raw.trips))throw new Error('Unsupported Flight Schedule import/backup file.');
   if(raw.trips.length>4000)throw new Error('Import exceeds 4,000 trips.');
   const inputs=raw.trips.map(t=>({id:String(t.id||''),...normaliseTrip(t)}));
   if(new Set(inputs.map(x=>x.id)).size!==inputs.length||inputs.some(x=>!/^[-a-zA-Z0-9_]{8,160}$/.test(x.id)))throw new Error('One or more import IDs are invalid or repeated.');
   const current=await getDocsFromServer(tripsRef());
   const existingIds=new Set(current.docs.map(x=>x.id));
   const pending=inputs.filter(x=>!existingIds.has(x.id));
-  if(!pending.length){toast('Nothing to import: all trip IDs already exist.');return;}
+  if(!pending.length) {
+    if(Array.isArray(raw.aircraftGroups)&&raw.aircraftGroups.length) {
+      const incoming=cleanGroups(raw.aircraftGroups);
+      if(window.confirm(`All trip IDs exist already. Restore the ${incoming.length} aircraft groups from this backup? This replaces the current group layout, but does not affect trips.`)) {
+        await modifyGroups(()=>incoming);toast('Aircraft groups restored; existing trips were not changed.');
+      }
+    }else toast('Nothing to import: all trip IDs already exist.');
+    return;
+  }
   if(!window.confirm(`Import ${pending.length} new trips? Existing trips will not be overwritten; names will be renumbered by airline and aircraft where required.`))return;
   let imported=0,skipped=0;
   for(let i=0;i<pending.length;i+=150) {
@@ -441,11 +557,20 @@ async function importFile(file) {
           try {await api.moveSlot(null,id,data.region);}
           catch(err){notAdded++;continue;}
         }
+        validateArchivedTrip(data);
         api.put(id,data);added++;
       }
       return {added,notAdded};
     });
     imported+=result.added;skipped+=result.notAdded;
+  }
+  if(Array.isArray(raw.aircraftGroups)&&raw.aircraftGroups.length) {
+    try {
+      const incoming=cleanGroups(raw.aircraftGroups);
+      if(window.confirm(`This backup includes ${incoming.length} aircraft groups. Restore them? Current aircraft groups will be replaced (trips are unaffected).`)) {
+        await modifyGroups(()=>incoming);
+      }
+    }catch(error){toast(`Trips imported, but aircraft groups could not be restored: ${errorMessage(error)}`,true);return;}
   }
   toast(`Imported ${imported} trips and generated sequential names.${skipped?' '+skipped+' already existing or conflicting active trips skipped.':''}`);
 }

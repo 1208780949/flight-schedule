@@ -1,5 +1,6 @@
 /** Trip numbering is global across regions and statuses for each airline/aircraft pair. */
 import { airlineName } from './domain.mjs';
+import { validateArchive } from './archive-integrity.mjs';
 
 export const comboKey = (t) => JSON.stringify([airlineName(t.airline).toLocaleLowerCase('en'), String(t.aircraft || '').trim().toLocaleLowerCase('en')]);
 export const tripTitle = (t) => `${airlineName(t.airline)} ${String(t.aircraft || '').trim()} Trip ${t.tripNumber || '?'}`;
@@ -61,9 +62,7 @@ export function assignNumbers(trips, { priorityId = null } = {}) {
   }
   return output;
 }
+// Retained for compatibility with existing numbering unit tests; now strictly validated.
 export function splitLegs(trip) {
-  const done = trip.legs.filter(l=>l.completed);
-  const remaining = trip.legs.filter(l=>!l.completed);
-  if(!done.length) throw new Error('Mark at least one flight leg complete before archiving.');
-  return {done,remaining};
+  return validateArchive(trip);
 }
