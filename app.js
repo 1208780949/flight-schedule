@@ -8,6 +8,7 @@ import { firebaseConfig } from './firebase.js';
 import { REGIONS, regionName, esc, progress, normaliseTrip, canActivate, describeRoute, grouped, airlineName } from './domain.mjs';
 import { assignNumbers, comboKey, tripTitle, validNumber } from './numbering.mjs';
 import { installLegKeyboardNavigation } from './leg-keyboard.mjs';
+import { installLegReordering } from './leg-reorder.mjs';
 import { inspectArchive, validateArchive, validateArchivedTrip } from './archive-integrity.mjs';
 import { cleanGroups, createGroup, renameGroup, deleteGroup, moveType, assignedGroup, matchesAircraft, UNGROUPED } from './aircraft-groups.mjs';
 
@@ -15,7 +16,7 @@ const firebase = initializeApp(firebaseConfig);
 const auth = getAuth(firebase);
 const db = getFirestore(firebase);
 const $ = id => document.getElementById(id);
-const state = { numberingBusy:false, user: null, unsubscribe: null, unsubscribeGroups: null, trips: [], groups: [], loading: true, view: 'planned', region: 'all', aircraft: 'all', aircraftGroup: null, airline: 'all', modalTripId: null, editorLegs: [] };
+const state = { numberingBusy:false, user: null, unsubscribe: null, unsubscribeGroups: null, trips: [], groups: [], loading: true, view: 'planned', region: 'all', aircraft: 'all', aircraftGroup: null, collapsedGroups: new Set(), airline: 'all', modalTripId: null, editorLegs: [] };
 const views = {
   planned: ['PLANNING', 'Flight planning', 'Build and organise itineraries for every aircraft type.', 'Planned itineraries'],
   active: ['ACTIVE FLIGHTS', 'Active trips', 'One active itinerary per region. Track progress leg by leg.', 'Currently flying'],
@@ -42,10 +43,26 @@ function slotRef(region) { return doc(db, 'users', state.user.uid, 'activeSlots'
 function numberingRef() { return doc(db, 'users', state.user.uid, 'metadata', 'numbering'); }
 function groupsRef() { return doc(db, 'users', state.user.uid, 'settings', 'aircraftGroups'); }
 
+// Local presentation preference only; group membership remains synced via Firestore.
+function collapsedStorageKey(uid) { return `flight-planner-collapsed-groups-${uid}`; }
+function loadCollapsedGroups(uid) {
+  try {
+    const ids=JSON.parse(localStorage.getItem(collapsedStorageKey(uid))||'[]');
+    return new Set(Array.isArray(ids)?ids.filter(id=>typeof id==='string'):[]);
+  } catch { return new Set(); }
+}
+function toggleGroupCollapsed(id) {
+  if(state.collapsedGroups.has(id)) state.collapsedGroups.delete(id);
+  else state.collapsedGroups.add(id);
+  try { localStorage.setItem(collapsedStorageKey(state.user.uid),JSON.stringify([...state.collapsedGroups])); }
+  catch { /* Private-browsing storage can be unavailable; collapsing still works this session. */ }
+  render();
+}
+
 onAuthStateChanged(auth, (user) => {
   if (state.unsubscribe) { state.unsubscribe(); state.unsubscribe = null; }
   if (state.unsubscribeGroups) { state.unsubscribeGroups(); state.unsubscribeGroups = null; }
-  state.user = user; state.trips = []; state.groups = []; state.loading = true; state.aircraft = 'all'; state.aircraftGroup = null; state.airline = 'all'; closeModal();
+  state.user = user; state.trips = []; state.groups = []; state.loading = true; state.aircraft = 'all'; state.aircraftGroup = null; state.collapsedGroups = user ? loadCollapsedGroups(user.uid) : new Set(); state.airline = 'all'; closeModal();
   $('authScreen').classList.toggle('hidden', !!user);
   $('mainApp').classList.toggle('hidden', !user);
   if (!user) return;
@@ -110,7 +127,8 @@ function render() {
   const ungrouped = known.filter(a=>!groupedTypes.has(a.toLocaleLowerCase('en')));
   const renderFolder = (id,name,types,ungroupedFolder=false) => {
     const folderCount=types.reduce((total,a)=>total+countFor(a),0);
-    return `<section class="aircraft-folder" data-drop-group="${esc(id)}"><div class="folder-head"><button data-group="${esc(id)}" class="aircraft-item folder-filter ${state.aircraftGroup===id&&state.aircraft==='all'?'selected':''}" title="Filter by ${esc(name)}"><span>${ungroupedFolder?'▤':'▾'}</span> ${esc(name)} <span class="aircraft-count">${folderCount}</span></button>${ungroupedFolder?'':`<button data-rename-group="${esc(id)}" class="folder-action" title="Rename ${esc(name)}" aria-label="Rename ${esc(name)}">✎</button><button data-delete-group="${esc(id)}" class="folder-action" title="Delete ${esc(name)} group (flights unchanged)" aria-label="Delete ${esc(name)} group">×</button>`}</div><div class="folder-children">${types.length?types.map(typeRow).join(''):`<div class="folder-drop-hint">Drag aircraft here</div>`}</div></section>`;
+    const collapsed=state.collapsedGroups.has(id);
+    return `<section class="aircraft-folder ${collapsed?'is-collapsed':''}" data-drop-group="${esc(id)}"><div class="folder-head"><button type="button" class="folder-toggle" data-toggle-group="${esc(id)}" aria-expanded="${!collapsed}" aria-controls="aircraft-children-${esc(id)}" aria-label="${collapsed?'Expand':'Collapse'} ${esc(name)}" title="${collapsed?'Show':'Hide'} aircraft types in ${esc(name)}">${collapsed?'▸':'▾'}</button><button data-group="${esc(id)}" class="aircraft-item folder-filter ${state.aircraftGroup===id&&state.aircraft==='all'?'selected':''}" title="Filter by ${esc(name)}">${esc(name)} <span class="aircraft-count">${folderCount}</span></button>${ungroupedFolder?'':`<button data-rename-group="${esc(id)}" class="folder-action" title="Rename ${esc(name)}" aria-label="Rename ${esc(name)}">✎</button><button data-delete-group="${esc(id)}" class="folder-action" title="Delete ${esc(name)} group (flights unchanged)" aria-label="Delete ${esc(name)} group">×</button>`}</div><div id="aircraft-children-${esc(id)}" class="folder-children" ${collapsed?'hidden':''}>${types.length?types.map(typeRow).join(''):`<div class="folder-drop-hint">Drag aircraft here</div>`}</div></section>`;
   };
   $('aircraftFilters').innerHTML = `<button data-aircraft="all" class="aircraft-item ${state.aircraft==='all' && !state.aircraftGroup?'selected':''}"><span>▦</span> All aircraft <span class="aircraft-count">${state.trips.length}</span></button>`+
     state.groups.map(g=>renderFolder(g.id,g.name,g.types.filter(a=>known.some(k=>k.toLocaleLowerCase('en')===a.toLocaleLowerCase('en'))))).join('')+
@@ -148,6 +166,7 @@ document.addEventListener('click', async e => {
   if (button.dataset.region) { state.region = button.dataset.region; render(); return; }
   if (button.dataset.aircraft !== undefined) { state.aircraft = button.dataset.aircraft; state.aircraftGroup=null; render(); return; }
   if (button.dataset.group !== undefined) { state.aircraft='all'; state.aircraftGroup=button.dataset.group; render(); return; }
+  if (button.dataset.toggleGroup !== undefined) { toggleGroupCollapsed(button.dataset.toggleGroup); return; }
   if (button.dataset.createGroup !== undefined) { await promptCreateGroup(); return; }
   if (button.dataset.renameGroup !== undefined) { await promptRenameGroup(button.dataset.renameGroup); return; }
   if (button.dataset.deleteGroup !== undefined) { await promptDeleteGroup(button.dataset.deleteGroup); return; }
@@ -448,9 +467,11 @@ function refreshDetailIfOpen() {
 
 function blankLeg() {return {flightNumber:'',callsign:'',departure:'',arrival:'',notes:'',completed:false};}
 function editorRow(leg,i) {
-  return `<div class="leg-edit-row" data-leg-row><span class="rownum">${i+1}</span><input aria-label="Flight number for leg ${i+1}" data-field="flightNumber" placeholder="Flight #" value="${esc(leg.flightNumber)}"><input aria-label="Departure for leg ${i+1}" data-field="departure" placeholder="DEP" maxlength="5" value="${esc(leg.departure)}" required><input aria-label="Arrival for leg ${i+1}" data-field="arrival" placeholder="ARR" maxlength="5" value="${esc(leg.arrival)}" required><input aria-label="Callsign for leg ${i+1}" data-field="callsign" placeholder="Callsign" value="${esc(leg.callsign)}"><input aria-label="Notes for leg ${i+1}" data-field="notes" placeholder="Leg notes" value="${esc(leg.notes)}"><label title="Completed"><input type="checkbox" data-field="completed" ${leg.completed?'checked':''}></label><div class="row-actions"><button type="button" data-leg-action="up" data-index="${i}" title="Move leg up">↑</button><button type="button" data-leg-action="down" data-index="${i}" title="Move leg down">↓</button><button type="button" data-leg-action="delete" data-index="${i}" title="Delete leg">×</button></div></div>`;
+  return `<div class="leg-edit-row" data-leg-row data-leg-index="${i}"><span class="rownum">${i+1}</span><input aria-label="Flight number for leg ${i+1}" data-field="flightNumber" placeholder="Flight #" value="${esc(leg.flightNumber)}"><input aria-label="Departure for leg ${i+1}" data-field="departure" placeholder="DEP" maxlength="5" value="${esc(leg.departure)}" required><input aria-label="Arrival for leg ${i+1}" data-field="arrival" placeholder="ARR" maxlength="5" value="${esc(leg.arrival)}" required><input aria-label="Callsign for leg ${i+1}" data-field="callsign" placeholder="Callsign" value="${esc(leg.callsign)}"><input aria-label="Notes for leg ${i+1}" data-field="notes" placeholder="Leg notes" value="${esc(leg.notes)}"><label title="Completed"><input type="checkbox" data-field="completed" ${leg.completed?'checked':''}></label><div class="row-actions"><button type="button" class="leg-grab" draggable="true" data-leg-drag-handle title="Drag to reorder leg ${i+1}" aria-label="Drag leg ${i+1} to another position">⠿</button><button type="button" data-leg-action="up" data-index="${i}" title="Move leg up" aria-label="Move leg ${i+1} up">↑</button><button type="button" data-leg-action="down" data-index="${i}" title="Move leg down" aria-label="Move leg ${i+1} down">↓</button><button type="button" data-leg-action="delete" data-index="${i}" title="Delete leg" aria-label="Delete leg ${i+1}">×</button><button type="button" class="leg-insert-inline" data-insert-at="${i+1}" title="Insert leg after leg ${i+1}" aria-label="Insert new leg after leg ${i+1}">＋</button></div></div>`;
 }
-function editorRows(legs) { $('editorLegRows').innerHTML=legs.map(editorRow).join(''); }
+function editorRows(legs) {
+  $('editorLegRows').innerHTML=legs.map(editorRow).join('');
+}
 function readEditorLegs() {
   return [...$('editorLegRows').querySelectorAll('[data-leg-row]')].map(row=>{
     const val=key=>row.querySelector(`[data-field="${key}"]`).value;
@@ -467,7 +488,7 @@ function openEditor(id=null,defaults={}) {
   const airlineChoices=knownAirlines.map(a=>`<option value="${esc(a)}"></option>`).join('');
   const members=state.trips.filter(x=>comboKey(x)===comboKey(trip) && (!t || x.id!==t.id));
   const suggested = validNumber(trip.tripNumber) ? trip.tripNumber : members.length+1;
-  const body=`<form id="tripForm"><div class="numbering-panel"><div class="field"><label for="tripPreview">Automatically generated trip name</label><div class="generated-trip-title" id="tripPreview">${esc(tripTitle({...trip,tripNumber:suggested}))}</div><p id="numberHelp" class="edit-footnote">Trip numbers are unique for each airline and aircraft, across all regions and statuses.</p></div><div class="field"><label for="tripNumber">Trip number (n)</label><input id="tripNumber" type="number" min="1" max="100000" step="1" value="${suggested}" required><label class="manual-number-label"><input id="tripNumberManual" type="checkbox" ${trip.numberManual?'checked':''}> Reserve this number manually</label></div></div><div class="edit-grid"><div class="field"><label for="tripAircraft">Aircraft type</label><input id="tripAircraft" maxlength="100" list="aircraftOptions" placeholder="e.g. B707" value="${esc(trip.aircraft)}" required><datalist id="aircraftOptions">${aircraftChoices}</datalist></div><div class="field"><label for="tripAirline">Airline</label><input id="tripAirline" maxlength="120" list="airlineOptions" placeholder="e.g. British Airways" value="${esc(airlineName(trip.airline)==='Unassigned'&&!t?'':airlineName(trip.airline))}" required><datalist id="airlineOptions">${airlineChoices}</datalist></div><div class="field"><label for="tripRegion">Region</label><select id="tripRegion">${REGIONS.map(r=>`<option value="${r.id}" ${trip.region===r.id?'selected':''}>${r.label}</option>`).join('')}</select></div></div><div class="field"><label for="tripNotes">Trip notes</label><textarea id="tripNotes" rows="2" maxlength="10000" placeholder="Optional general itinerary notes">${esc(trip.notes)}</textarea></div><div class="editor-section"><h3>Flight legs</h3><button type="button" id="addLegButton" class="btn neutral small">+ Add leg</button></div><div class="editor-leg-header"><span>#</span><span>Flight #</span><span>DEP</span><span>ARR</span><span>Callsign</span><span>Notes</span><span>Done</span><span>Order</span></div><div id="editorLegRows"></div><p class="edit-footnote">Keyboard: Shift+Enter inserts a leg below the current row; ↑/↓ move between rows, ←/→ move between cells at text boundaries. Use the row buttons to reorder legs. Airport codes are uppercase.</p></form>`;
+  const body=`<form id="tripForm"><div class="numbering-panel"><div class="field"><label for="tripPreview">Automatically generated trip name</label><div class="generated-trip-title" id="tripPreview">${esc(tripTitle({...trip,tripNumber:suggested}))}</div><p id="numberHelp" class="edit-footnote">Trip numbers are unique for each airline and aircraft, across all regions and statuses.</p></div><div class="field"><label for="tripNumber">Trip number (n)</label><input id="tripNumber" type="number" min="1" max="100000" step="1" value="${suggested}" required><label class="manual-number-label"><input id="tripNumberManual" type="checkbox" ${trip.numberManual?'checked':''}> Reserve this number manually</label></div></div><div class="edit-grid"><div class="field"><label for="tripAircraft">Aircraft type</label><input id="tripAircraft" maxlength="100" list="aircraftOptions" placeholder="e.g. B707" value="${esc(trip.aircraft)}" required><datalist id="aircraftOptions">${aircraftChoices}</datalist></div><div class="field"><label for="tripAirline">Airline</label><input id="tripAirline" maxlength="120" list="airlineOptions" placeholder="e.g. British Airways" value="${esc(airlineName(trip.airline)==='Unassigned'&&!t?'':airlineName(trip.airline))}" required><datalist id="airlineOptions">${airlineChoices}</datalist></div><div class="field"><label for="tripRegion">Region</label><select id="tripRegion">${REGIONS.map(r=>`<option value="${r.id}" ${trip.region===r.id?'selected':''}>${r.label}</option>`).join('')}</select></div></div><div class="field"><label for="tripNotes">Trip notes</label><textarea id="tripNotes" rows="2" maxlength="10000" placeholder="Optional general itinerary notes">${esc(trip.notes)}</textarea></div><div class="editor-section"><h3>Flight legs</h3><div class="editor-toolbar"><button type="button" id="insertFirstLegButton" class="btn neutral small" title="Insert a blank leg before the first leg">＋ Insert first</button><button type="button" id="addLegButton" class="btn neutral small">+ Add leg</button></div></div><div class="editor-leg-header"><span>#</span><span>Flight #</span><span>DEP</span><span>ARR</span><span>Callsign</span><span>Notes</span><span>Done</span><span>Actions / Insert</span></div><div id="editorLegRows"></div><p class="edit-footnote">Use the <strong>＋</strong> button at the right of each row to insert a leg below it, or <strong>Insert first</strong> to add a leg at the top. Shift+Enter also inserts below the current leg. Drag by the ⠿ grip to reorder flights; ↑/↓ buttons also change order. Arrow keys navigate cells as before. Changes save only when you click Save trip.</p><div id="legEditorAnnounce" class="visually-hidden" role="status" aria-live="polite"></div></form>`;
   modalHTML(t?'Edit itinerary':'Create a new trip',t?'UPDATE FLIGHT PLAN':'FLIGHT PLANNING',body,`<button type="button" class="btn neutral" id="cancelEditor">Cancel</button><button type="submit" form="tripForm" class="btn primary" id="saveTripButton">Save trip</button>`);
   const updateNumberPreview=()=>{
     const temporary={airline:$('tripAirline').value.trim()||'Unassigned',aircraft:$('tripAircraft').value.trim()};
@@ -491,8 +512,10 @@ function openEditor(id=null,defaults={}) {
   updateNumberPreview();
   editorRows(trip.legs);
   installLegKeyboardNavigation($('editorLegRows'), {readLegs: readEditorLegs, renderLegs: editorRows, blankLeg});
+  installLegReordering($('editorLegRows'), {readLegs: readEditorLegs, renderLegs: editorRows, blankLeg, onChange: message => {$('legEditorAnnounce').textContent = message;}});
   $('cancelEditor').addEventListener('click',closeModal);
-  $('addLegButton').addEventListener('click',()=>{const rows=readEditorLegs();rows.push(blankLeg());editorRows(rows);$('editorLegRows').lastElementChild.querySelector('[data-field="flightNumber"]').focus();});
+  $('insertFirstLegButton').addEventListener('click',()=>{const rows=readEditorLegs();rows.unshift(blankLeg());editorRows(rows);$('editorLegRows').querySelector('[data-leg-row] [data-field="flightNumber"]')?.focus();});
+  $('addLegButton').addEventListener('click',()=>{const rows=readEditorLegs();rows.push(blankLeg());editorRows(rows);[...$('editorLegRows').querySelectorAll('[data-leg-row]')].at(-1)?.querySelector('[data-field="flightNumber"]')?.focus();});
   $('editorLegRows').addEventListener('click',e=>{
     const btn=e.target.closest('[data-leg-action]');if(!btn)return;
     let rows=readEditorLegs();const i=Number(btn.dataset.index),what=btn.dataset.legAction;

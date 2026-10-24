@@ -35,3 +35,53 @@
 .archive-warning{padding:13px 15px;margin:12px 0;background:#fff1e9;border:1px solid #eab49b;color:#924630;border-radius:8px;font-size:12px;line-height:1.65}
 .archive-warning strong{display:block;margin-bottom:2px}
 @media(max-width:650px){.sidebar .aircraft-heading,.sidebar .aircraft-filters{display:block}.sidebar .aircraft-heading{display:flex;margin:10px 8px 5px}.aircraft-filters{max-height:240px;overflow-y:auto}.aircraft-folder{margin:4px 0}.folder-children{margin-left:12px}}
+
+/* v1.5: in-between leg insertion and drag reordering */
+.editor-leg-header,.leg-edit-row{grid-template-columns:25px minmax(60px,.8fr) minmax(65px,.85fr) minmax(65px,.85fr) minmax(65px,.85fr) minmax(80px,1.4fr) 36px 114px}
+.editor-leg-header span:nth-last-child(2),.editor-leg-header span:last-child{text-align:center}
+.row-actions{justify-content:flex-end;align-items:center;white-space:nowrap}
+.row-actions button{min-width:22px;min-height:26px;cursor:pointer}
+.row-actions .leg-grab{cursor:grab;user-select:none;touch-action:none;color:#416c8d;background:#dceaf5;font-size:16px;font-weight:800}
+.row-actions .leg-grab:active{cursor:grabbing}
+.row-actions .leg-grab:focus-visible,.row-actions .leg-insert-inline:focus-visible{outline:2px solid #207cac;outline-offset:2px}
+.leg-edit-row{position:relative;transition:background-color .12s ease}
+.leg-edit-row.leg-dragging{opacity:.48;background:#eef7fe}
+.leg-edit-row.leg-drop-before{box-shadow:inset 0 3px #238fc9;background:#ebf8ff}
+.leg-edit-row.leg-drop-after{box-shadow:inset 0 -3px #238fc9;background:#ebf8ff}
+.visually-hidden{position:absolute!important;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+@media(max-width:900px){.leg-edit-row{grid-template-columns:1fr 1fr 1fr}.leg-edit-row .row-actions{grid-column:span 3;justify-content:flex-start}}
+
+/* v1.6: in-row insertion and compact collapsible aircraft groups */
+.editor-leg-header,.leg-edit-row{grid-template-columns:25px minmax(56px,.8fr) minmax(62px,.85fr) minmax(62px,.85fr) minmax(62px,.85fr) minmax(75px,1.4fr) 24px 158px;gap:5px}
+.leg-edit-row{padding:3px 0}
+.leg-edit-row input:not([type="checkbox"]){padding:7px 6px}
+.editor-toolbar{display:flex;align-items:center;gap:6px}
+.row-actions{justify-content:flex-end;gap:3px}
+.row-actions button{padding:3px;min-width:25px;min-height:25px}
+.row-actions .leg-insert-inline{margin-left:3px;background:#e0f1fc;color:#196d9b;font-size:16px;font-weight:800;border:1px solid #bfdded}
+.row-actions .leg-insert-inline:hover{background:#c6e5fa;color:#09496e}
+.aircraft-heading{margin-bottom:5px}
+.aircraft-filters{gap:2px}
+.aircraft-filters>.aircraft-item{min-height:30px;padding:5px 9px;font-size:11px}
+.aircraft-folder{min-height:0;margin:3px 0 4px;padding:2px 3px;border-radius:6px}
+.folder-head{gap:1px}
+.folder-filter{min-height:29px;padding:5px 4px!important;gap:5px;font-size:11px!important;border-radius:4px}
+.folder-filter .aircraft-count{font-size:10px}
+.folder-toggle{border:0;background:transparent;color:#a6bdd2;cursor:pointer;flex:0 0 21px;min-height:27px;padding:2px;border-radius:4px;font-size:14px}
+.folder-toggle:hover,.folder-toggle:focus-visible{color:#fff;background:#39536b}
+.folder-toggle:focus-visible{outline:2px solid #86c8ec;outline-offset:1px}
+.folder-action{padding:2px 3px;font-size:12px}
+.folder-children{margin:1px 0 2px 9px;padding-left:3px}
+.folder-children[hidden]{display:none!important}
+.aircraft-type-row{min-height:24px;gap:2px}
+.aircraft-type-row .drag-handle{font-size:10px}
+.aircraft-child{min-height:25px!important;padding:3px 2px!important;font-size:11px!important;gap:5px!important}
+.aircraft-child span:first-child{width:14px!important}
+.aircraft-child .aircraft-count{font-size:10px}
+.move-aircraft{padding:2px 3px}
+.sidebar .sidebar-label{margin-top:22px;margin-bottom:8px}
+@media(max-width:900px){
+  .leg-edit-row{grid-template-columns:1fr 1fr 1fr}
+  .leg-edit-row .row-actions{grid-column:span 3;justify-content:flex-end}
+}
+@media(max-width:650px){.aircraft-folder{margin:3px 0}.sidebar .aircraft-heading{margin:7px 8px 4px}}
