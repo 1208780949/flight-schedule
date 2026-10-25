@@ -26,7 +26,7 @@ export function moveLegToBoundary(legs, from, boundary) {
  * Row-end + buttons insert a blank leg after that row; drag targets are row halves.
  * All operations read the live form before rerendering to preserve unsaved data.
  */
-export function installLegReordering(container, {readLegs, renderLegs, blankLeg, onChange}) {
+export function installLegReordering(container, {readLegs, renderLegs, blankLeg, createInsertedLeg = (_legs,_index) => blankLeg(), onChange}) {
   let draggingFrom = null;
   let dropTarget = null;
   const rows = () => [...container.querySelectorAll('[data-leg-row]')];
@@ -53,7 +53,8 @@ export function installLegReordering(container, {readLegs, renderLegs, blankLeg,
     const button = event.target.closest('[data-insert-at]');
     if (!button || !container.contains(button)) return;
     const index = Number(button.dataset.insertAt);
-    const legs = insertLegAt(readLegs(), index, blankLeg());
+    const before = readLegs();
+    const legs = insertLegAt(before, index, createInsertedLeg(before, index));
     renderLegs(legs);
     rows()[index]?.querySelector('[data-field="flightNumber"]')?.focus();
     onChange?.(`Inserted a flight leg at position ${index + 1}.`);

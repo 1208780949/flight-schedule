@@ -11,6 +11,8 @@ import { installLegKeyboardNavigation } from './leg-keyboard.mjs';
 import { installLegReordering } from './leg-reorder.mjs';
 import { inspectArchive, validateArchive, validateArchivedTrip } from './archive-integrity.mjs';
 import { cleanGroups, createGroup, renameGroup, deleteGroup, moveType, assignedGroup, matchesAircraft, UNGROUPED } from './aircraft-groups.mjs';
+import { validateTripSequence, firstUpcomingLeg, validateCompletionUpdate, blankLegAfter } from './trip-validation.mjs';
+import { fitRouteSummary } from './route-summary.mjs';
 
 const firebase = initializeApp(firebaseConfig);
 const auth = getAuth(firebase);
@@ -104,6 +106,31 @@ $('importFile').addEventListener('change', async e => {
   try { await importFile(file); } catch (err) { toast(`Import failed: ${errorMessage(err)}`, true); }
 });
 
+// Route text is recalculated to fit the actual card width, including when the
+// browser or a region column is resized. Never infer fit from character count.
+const routeMeasureCanvas = document.createElement('canvas');
+const routeMeasureContext = routeMeasureCanvas.getContext('2d');
+const routeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(entries => {
+  for (const entry of entries) updateRouteSummary(entry.target);
+});
+function updateRouteSummary(element) {
+  const trip=getTrip(element.dataset.routeTrip);
+  if (!trip) return;
+  const style=getComputedStyle(element);
+  if (routeMeasureContext) routeMeasureContext.font=style.font;
+  const measure=text=>routeMeasureContext ? routeMeasureContext.measureText(text).width : text.length*7.5;
+  const width=element.getBoundingClientRect().width;
+  if (width>0) element.textContent=fitRouteSummary(trip.legs,width,measure);
+}
+function watchRouteSummaries() {
+  routeObserver?.disconnect();
+  document.querySelectorAll('[data-route-trip]').forEach(element=>{
+    updateRouteSummary(element);
+    routeObserver?.observe(element);
+  });
+}
+if (document.fonts?.ready) void document.fonts.ready.then(() => watchRouteSummaries());
+
 function render() {
   const cfg = views[state.view];
   $('breadcrumbPage').textContent = cfg[0]; $('pageTitle').textContent = cfg[1]; $('pageSubtitle').textContent = cfg[2];
@@ -146,17 +173,21 @@ function render() {
   $('board').innerHTML = `<div class="regions-grid ${regions.length === 1 ? 'single-region' : ''}">${regions.map(region => {
     const items = visible.filter(t => t.region === region.id).sort((a,b) => {
       const ai = a.updatedAt?.seconds || 0, bi = b.updatedAt?.seconds || 0;
-      return bi - ai || a.title.localeCompare(b.title);
+      return a.title.localeCompare(b.title,undefined,{numeric:true,sensitivity:'base'}) || a.id.localeCompare(b.id);
     });
     return `<section class="region-column"><div class="region-heading"><span class="region-mark">${region.emblem}</span><h3>${region.label}</h3><small>${items.length} ${items.length === 1 ? 'trip':'trips'}</small></div><div class="cards-stack">${items.length ? items.map(renderCard).join('') : emptyRegion(region)}</div></section>`;
   }).join('')}</div>`;
+  watchRouteSummaries();
 }
 function emptyRegion(region) {
   return `<div class="empty-region"><span class="empty-icon">✈</span><span>${state.view === 'active' ? 'No active trip in this region.' : state.view === 'archived' ? 'No archived trips here yet.' : 'No planned itineraries here yet.'}</span>${state.view === 'planned' ? `<button class="text-action" data-new-region="${region.id}">+ Add a trip</button>` : ''}</div>`;
 }
 function renderCard(t) {
   const p = progress(t), pct = p.total ? Math.round(100*p.done/p.total):0;
-  return `<article class="trip-card"><div class="trip-card-top"><span class="trip-type">${esc(t.aircraft)}</span><span class="trip-status">${p.total} ${p.total===1?'LEG':'LEGS'}</span></div><h4>${esc(t.title)}</h4><div class="trip-route">${esc(describeRoute(t.legs))}</div><div class="card-footer"><span class="mini-progress">${p.done}/${p.total} completed</span><div class="trip-actions">${t.status === 'planned' ? `<button class="text-action" data-activate="${esc(t.id)}">Activate →</button>` : ''}<button class="text-action" data-open="${esc(t.id)}">View details →</button></div></div><div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div></article>`;
+  const upcomingIndex = t.status==='active' ? firstUpcomingLeg(t.legs) : -1;
+  const upcoming = upcomingIndex>=0 ? t.legs[upcomingIndex] : null;
+  const upcomingHTML = t.status!=='active' ? '' : upcoming ? `<div class="upcoming-leg"><div class="upcoming-label">NEXT FLIGHT · LEG ${upcomingIndex+1}</div><div class="upcoming-main"><div class="upcoming-route"><strong>${esc(upcoming.departure)} → ${esc(upcoming.arrival)}</strong>${upcoming.flightNumber?`<small>Flight ${esc(upcoming.flightNumber)}</small>`:''}</div><button type="button" class="complete-next-btn" data-check-upcoming="${esc(t.id)}" data-leg-index="${upcomingIndex}" title="Mark this next flight complete" aria-label="Mark leg ${upcomingIndex+1} ${esc(upcoming.departure)} to ${esc(upcoming.arrival)} complete"><span class="next-checkbox" aria-hidden="true"></span> Complete</button></div></div>` : '<div class="upcoming-leg upcoming-done">All legs complete — ready to archive</div>';
+  return `<article class="trip-card"><div class="trip-card-top"><span class="trip-status">${p.total} ${p.total===1?'LEG':'LEGS'}</span></div><h4>${esc(t.title)}</h4><div class="trip-route card-route" data-route-trip="${esc(t.id)}">${esc(describeRoute(t.legs))}</div>${upcomingHTML}<div class="card-footer"><span class="mini-progress">${p.done}/${p.total} completed</span><div class="trip-actions">${t.status === 'planned' ? `<button class="text-action" data-activate="${esc(t.id)}">Activate →</button>` : ''}<button class="text-action" data-open="${esc(t.id)}">View details →</button></div></div><div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div></article>`;
 }
 
 // Delegate navigation and card actions to the document; rendered elements have stable data-* attributes.
@@ -174,6 +205,15 @@ document.addEventListener('click', async e => {
   if (button.dataset.newRegion) { openEditor(null,{region:button.dataset.newRegion}); return; }
   if (button.dataset.open) { openDetail(button.dataset.open); return; }
   if (button.dataset.activate) { await changeStatus(button.dataset.activate,'active'); return; }
+  if (button.dataset.checkUpcoming !== undefined) {
+    const trip=getTrip(button.dataset.checkUpcoming);
+    const index=Number(button.dataset.legIndex);
+    if (!trip || trip.status!=='active' || !trip.legs[index]) return;
+    button.disabled=true;
+    await toggleLeg(trip.id,index,{completeOnly:true,expected:trip.legs[index]});
+    if(button.isConnected)button.disabled=false;
+    return;
+  }
 });
 
 // Aircraft folders are private user settings, live-synced on all devices.
@@ -370,20 +410,23 @@ async function changeStatus(id, to) {
   try { await saveTrip({...trip,status:to},id); toast(to==='active'?'Trip promoted to active.':to==='planned'?'Trip moved to planning.':'Trip moved to archive.'); closeModal(); }
   catch(e){toast(errorMessage(e),true);}
 }
-async function toggleLeg(id,index) {
+async function toggleLeg(id,index,{completeOnly=false,expected=null}={}) {
   const ref=tripRef(id);
   try {
     await runTransaction(db,async txn=>{
       const snap=await txn.get(ref);if(!snap.exists())throw new Error('Trip no longer exists.');
-      if(snap.data().status==='archived')throw new Error('Archived flights must remain complete. Move the trip to planning before changing completion.');
+      if(snap.data().status!=='active')throw new Error('Only active trips can have flights marked complete in trip details or on a card.');
       const legs=snap.data().legs.map(x=>({...x}));
       if(!legs[index])throw new Error('That leg has changed. Reopen the trip.');
-      legs[index].completed=!legs[index].completed;
-      txn.update(ref,{legs,updatedAt:serverTimestamp()});
+      if(expected && ['departure','arrival','flightNumber'].some(field=>String(legs[index][field]||'')!==String(expected[field]||'')))
+        throw new Error('The upcoming flight has changed on another device. Refresh and try again.');
+      if(completeOnly && legs[index].completed===true)throw new Error('This flight has already been completed.');
+      const next=validateCompletionUpdate(legs,index);
+      txn.update(ref,{legs:next,updatedAt:serverTimestamp()});
     });
-    // Repaint selected detail from the latest local state when Firestore emits an update.
   }catch(e){toast(errorMessage(e),true);}
 }
+
 async function deleteTrip(id){
   if(!window.confirm('Permanently delete this trip and every leg? Automatic trip numbers in its airline/aircraft group may be reassigned.'))return;
   try {
@@ -432,12 +475,12 @@ window.addEventListener('keydown', e=> {if(e.key==='Escape'&&$('modalRoot').inne
 function openDetail(id) {
   const t=getTrip(id);if(!t)return;
   state.modalTripId=id;
-  const p=progress(t),pct=Math.round(100*p.done/p.total);
+  const p=progress(t),pct=p.total?Math.round(100*p.done/p.total):0;
   const integrity=inspectArchive(t);
   const archivedInvalid=t.status==='archived' && t.legs.some(l=>l.completed!==true);
   const archiveWarning=archivedInvalid ? `<div class="archive-warning" role="alert"><strong>Archived trip integrity issue.</strong> Every archived flight must be complete. Use Edit itinerary to correct its completion markers.</div>` :
     t.status!=='archived'&&p.done>0&&!integrity.valid?`<div class="archive-warning" role="alert"><strong>Archive integrity check failed.</strong> ${esc(integrity.reason)}</div>`:'';
-  const body=`<div class="detail-head"><span class="pill">${esc(t.aircraft)}</span><span class="pill">${esc(regionName(t.region))}</span><span class="pill ${t.status==='active'?'green':'gray'}">${esc(t.status.toUpperCase())}</span></div><div class="trip-route" style="font-size:14px">${esc(describeRoute(t.legs))}</div>${t.notes?`<div class="detail-note">${esc(t.notes)}</div>`:''}<div class="detail-progress"><span>FLIGHT PROGRESS</span><span>${p.done} of ${p.total} legs · ${pct}%</span></div><div class="progress-track" style="height:7px;margin:2px 0 20px"><div class="progress-fill" style="width:${pct}%"></div></div>${archiveWarning}<div style="overflow:auto"><table class="legs-table"><thead><tr><th>Done</th><th>Leg / Route</th><th>Flight number</th><th>Callsign</th><th>Notes</th></tr></thead><tbody>${t.legs.map((leg,i)=>`<tr class="${leg.completed?'completed-leg':''}"><td><button class="checkbox-button ${leg.completed?'checked':''}" data-check="${i}" aria-label="${leg.completed?'Unmark':'Mark'} leg ${i+1} complete">${leg.completed?'✓':''}</button></td><td>${i+1}. ${esc(leg.departure)} <span class="route-arrow">→</span> ${esc(leg.arrival)}</td><td>${esc(leg.flightNumber)||'—'}</td><td>${esc(leg.callsign)||'—'}</td><td class="leg-notes">${esc(leg.notes)||'—'}</td></tr>`).join('')}</tbody></table></div>`;
+  const body=`<div class="detail-head"><span class="pill">${esc(t.aircraft)}</span><span class="pill">${esc(regionName(t.region))}</span><span class="pill ${t.status==='active'?'green':'gray'}">${esc(t.status.toUpperCase())}</span></div><div class="trip-route" style="font-size:14px">${esc(describeRoute(t.legs))}</div>${t.notes?`<div class="detail-note">${esc(t.notes)}</div>`:''}<div class="detail-progress"><span>FLIGHT PROGRESS</span><span>${p.done} of ${p.total} legs · ${pct}%</span></div><div class="progress-track" style="height:7px;margin:2px 0 20px"><div class="progress-fill" style="width:${pct}%"></div></div>${archiveWarning}<div style="overflow:auto"><table class="legs-table"><thead><tr><th>Done</th><th>Leg / Route</th><th>Flight number</th><th>Callsign</th><th>Notes</th></tr></thead><tbody>${t.legs.map((leg,i)=>`<tr class="${leg.completed?'completed-leg':''}"><td><button class="checkbox-button ${leg.completed?'checked':''}" data-check="${i}" ${t.status!=='active'?'disabled title="Completion can only be changed for active trips"':''} aria-label="${leg.completed?'Unmark':'Mark'} leg ${i+1} complete">${leg.completed?'✓':''}</button></td><td>${i+1}. ${esc(leg.departure)} <span class="route-arrow">→</span> ${esc(leg.arrival)}</td><td>${esc(leg.flightNumber)||'—'}</td><td>${esc(leg.callsign)||'—'}</td><td class="leg-notes">${esc(leg.notes)||'—'}</td></tr>`).join('')}</tbody></table></div>`;
   const actions=[];
   if(t.status==='planned')actions.push(`<button id="promoteButton" class="btn primary">Activate trip →</button>`);
   if(t.status!=='archived')actions.push(`<button id="archiveButton" class="btn primary" ${!integrity.valid?'disabled title="Complete a consecutive prefix of legs before archiving"':''}>${p.done===p.total?'Archive completed trip':'Archive completed legs'} →</button>`);
@@ -445,7 +488,10 @@ function openDetail(id) {
   if(t.status==='archived')actions.push('<button id="reactivateButton" class="btn neutral">Reactivate</button>');
   const footer=`<button id="deleteButton" class="btn danger small">Delete</button><div class="footer-actions"><button id="editButton" class="btn neutral">Edit itinerary</button>${actions.join('')}</div>`;
   modalHTML(t.title,'TRIP DETAILS',body,footer);
-  $('modalRoot').querySelectorAll('[data-check]').forEach(b=>{if(t.status==='archived'){b.disabled=true;b.title='Archived flights must remain complete';}else b.addEventListener('click',async()=>{b.disabled=true;await toggleLeg(id,Number(b.dataset.check));});});
+  $('modalRoot').querySelectorAll('[data-check]').forEach(b=>{
+    if(t.status!=='active') {b.disabled=true;b.title=t.status==='planned'?'Activate this trip before marking flights complete.':'Archived flights must remain complete.';}
+    else b.addEventListener('click',async()=>{b.disabled=true;await toggleLeg(id,Number(b.dataset.check),{expected:t.legs[Number(b.dataset.check)]});if(b.isConnected)b.disabled=false;});
+  });
   $('editButton').addEventListener('click',()=>openEditor(id));$('deleteButton').addEventListener('click',()=>deleteTrip(id));
   $('promoteButton')?.addEventListener('click',()=>changeStatus(id,'active'));
   $('returnPlanningButton')?.addEventListener('click',()=>changeStatus(id,'planned'));
@@ -488,7 +534,7 @@ function openEditor(id=null,defaults={}) {
   const airlineChoices=knownAirlines.map(a=>`<option value="${esc(a)}"></option>`).join('');
   const members=state.trips.filter(x=>comboKey(x)===comboKey(trip) && (!t || x.id!==t.id));
   const suggested = validNumber(trip.tripNumber) ? trip.tripNumber : members.length+1;
-  const body=`<form id="tripForm"><div class="numbering-panel"><div class="field"><label for="tripPreview">Automatically generated trip name</label><div class="generated-trip-title" id="tripPreview">${esc(tripTitle({...trip,tripNumber:suggested}))}</div><p id="numberHelp" class="edit-footnote">Trip numbers are unique for each airline and aircraft, across all regions and statuses.</p></div><div class="field"><label for="tripNumber">Trip number (n)</label><input id="tripNumber" type="number" min="1" max="100000" step="1" value="${suggested}" required><label class="manual-number-label"><input id="tripNumberManual" type="checkbox" ${trip.numberManual?'checked':''}> Reserve this number manually</label></div></div><div class="edit-grid"><div class="field"><label for="tripAircraft">Aircraft type</label><input id="tripAircraft" maxlength="100" list="aircraftOptions" placeholder="e.g. B707" value="${esc(trip.aircraft)}" required><datalist id="aircraftOptions">${aircraftChoices}</datalist></div><div class="field"><label for="tripAirline">Airline</label><input id="tripAirline" maxlength="120" list="airlineOptions" placeholder="e.g. British Airways" value="${esc(airlineName(trip.airline)==='Unassigned'&&!t?'':airlineName(trip.airline))}" required><datalist id="airlineOptions">${airlineChoices}</datalist></div><div class="field"><label for="tripRegion">Region</label><select id="tripRegion">${REGIONS.map(r=>`<option value="${r.id}" ${trip.region===r.id?'selected':''}>${r.label}</option>`).join('')}</select></div></div><div class="field"><label for="tripNotes">Trip notes</label><textarea id="tripNotes" rows="2" maxlength="10000" placeholder="Optional general itinerary notes">${esc(trip.notes)}</textarea></div><div class="editor-section"><h3>Flight legs</h3><div class="editor-toolbar"><button type="button" id="insertFirstLegButton" class="btn neutral small" title="Insert a blank leg before the first leg">＋ Insert first</button><button type="button" id="addLegButton" class="btn neutral small">+ Add leg</button></div></div><div class="editor-leg-header"><span>#</span><span>Flight #</span><span>DEP</span><span>ARR</span><span>Callsign</span><span>Notes</span><span>Done</span><span>Actions / Insert</span></div><div id="editorLegRows"></div><p class="edit-footnote">Use the <strong>＋</strong> button at the right of each row to insert a leg below it, or <strong>Insert first</strong> to add a leg at the top. Shift+Enter also inserts below the current leg. Drag by the ⠿ grip to reorder flights; ↑/↓ buttons also change order. Arrow keys navigate cells as before. Changes save only when you click Save trip.</p><div id="legEditorAnnounce" class="visually-hidden" role="status" aria-live="polite"></div></form>`;
+  const body=`<form id="tripForm"><div class="numbering-panel"><div class="field"><label for="tripPreview">Automatically generated trip name</label><div class="generated-trip-title" id="tripPreview">${esc(tripTitle({...trip,tripNumber:suggested}))}</div><p id="numberHelp" class="edit-footnote">Trip numbers are unique for each airline and aircraft, across all regions and statuses.</p></div><div class="field"><label for="tripNumber">Trip number (n)</label><input id="tripNumber" type="number" min="1" max="100000" step="1" value="${suggested}" required><label class="manual-number-label"><input id="tripNumberManual" type="checkbox" ${trip.numberManual?'checked':''}> Reserve this number manually</label></div></div><div class="edit-grid"><div class="field"><label for="tripAircraft">Aircraft type</label><input id="tripAircraft" maxlength="100" list="aircraftOptions" placeholder="e.g. B707" value="${esc(trip.aircraft)}" required><datalist id="aircraftOptions">${aircraftChoices}</datalist></div><div class="field"><label for="tripAirline">Airline</label><input id="tripAirline" maxlength="120" list="airlineOptions" placeholder="e.g. British Airways" value="${esc(airlineName(trip.airline)==='Unassigned'&&!t?'':airlineName(trip.airline))}" required><datalist id="airlineOptions">${airlineChoices}</datalist></div><div class="field"><label for="tripRegion">Region</label><select id="tripRegion">${REGIONS.map(r=>`<option value="${r.id}" ${trip.region===r.id?'selected':''}>${r.label}</option>`).join('')}</select></div></div><div class="field"><label for="tripNotes">Trip notes</label><textarea id="tripNotes" rows="2" maxlength="10000" placeholder="Optional general itinerary notes">${esc(trip.notes)}</textarea></div><div class="editor-section"><h3>Flight legs</h3><div class="editor-toolbar"><button type="button" id="insertFirstLegButton" class="btn neutral small" title="Insert a blank leg before the first leg">＋ Insert first</button><button type="button" id="addLegButton" class="btn neutral small">+ Add leg</button></div></div><div class="editor-leg-header"><span>#</span><span>Flight #</span><span>DEP</span><span>ARR</span><span>Callsign</span><span>Notes</span><span>Done</span><span>Actions / Insert</span></div><div id="editorLegRows"></div><p class="edit-footnote">Use the <strong>＋</strong> button at the right of each row to insert a leg below it, or <strong>Insert first</strong> to add a leg at the top. Shift+Enter also inserts below the current leg. Drag by the ⠿ grip to reorder flights; ↑/↓ buttons also change order. Arrow keys navigate cells as before. Changes save only when you click Save trip.</p><div id="legEditorAnnounce" class="visually-hidden" role="status" aria-live="polite"></div><div id="tripValidationError" class="trip-validation-error hidden" role="alert"></div></form>`;
   modalHTML(t?'Edit itinerary':'Create a new trip',t?'UPDATE FLIGHT PLAN':'FLIGHT PLANNING',body,`<button type="button" class="btn neutral" id="cancelEditor">Cancel</button><button type="submit" form="tripForm" class="btn primary" id="saveTripButton">Save trip</button>`);
   const updateNumberPreview=()=>{
     const temporary={airline:$('tripAirline').value.trim()||'Unassigned',aircraft:$('tripAircraft').value.trim()};
@@ -511,11 +557,12 @@ function openEditor(id=null,defaults={}) {
   $('tripNumberManual').addEventListener('change',()=>updateNumberPreview());
   updateNumberPreview();
   editorRows(trip.legs);
-  installLegKeyboardNavigation($('editorLegRows'), {readLegs: readEditorLegs, renderLegs: editorRows, blankLeg});
-  installLegReordering($('editorLegRows'), {readLegs: readEditorLegs, renderLegs: editorRows, blankLeg, onChange: message => {$('legEditorAnnounce').textContent = message;}});
+  const makeInsertedLeg=(rows,index)=>blankLegAfter(rows,index,blankLeg);
+  installLegKeyboardNavigation($('editorLegRows'), {readLegs: readEditorLegs, renderLegs: editorRows, blankLeg,createInsertedLeg:makeInsertedLeg});
+  installLegReordering($('editorLegRows'), {readLegs: readEditorLegs, renderLegs: editorRows, blankLeg, createInsertedLeg:makeInsertedLeg, onChange: message => {$('legEditorAnnounce').textContent = message;}});
   $('cancelEditor').addEventListener('click',closeModal);
-  $('insertFirstLegButton').addEventListener('click',()=>{const rows=readEditorLegs();rows.unshift(blankLeg());editorRows(rows);$('editorLegRows').querySelector('[data-leg-row] [data-field="flightNumber"]')?.focus();});
-  $('addLegButton').addEventListener('click',()=>{const rows=readEditorLegs();rows.push(blankLeg());editorRows(rows);[...$('editorLegRows').querySelectorAll('[data-leg-row]')].at(-1)?.querySelector('[data-field="flightNumber"]')?.focus();});
+  $('insertFirstLegButton').addEventListener('click',()=>{const rows=readEditorLegs();rows.unshift(makeInsertedLeg(rows,0));editorRows(rows);$('editorLegRows').querySelector('[data-leg-row] [data-field="flightNumber"]')?.focus();});
+  $('addLegButton').addEventListener('click',()=>{const rows=readEditorLegs();rows.push(makeInsertedLeg(rows,rows.length));editorRows(rows);[...$('editorLegRows').querySelectorAll('[data-leg-row]')].at(-1)?.querySelector('[data-field="flightNumber"]')?.focus();});
   $('editorLegRows').addEventListener('click',e=>{
     const btn=e.target.closest('[data-leg-action]');if(!btn)return;
     let rows=readEditorLegs();const i=Number(btn.dataset.index),what=btn.dataset.legAction;
@@ -524,10 +571,21 @@ function openEditor(id=null,defaults={}) {
     else if(what==='down'&&i<rows.length-1) [rows[i+1],rows[i]]=[rows[i],rows[i+1]];
     editorRows(rows);
   });
+  $('editorLegRows').addEventListener('input',()=>{ $('tripValidationError').classList.add('hidden');$('editorLegRows').querySelectorAll('.leg-validation-invalid').forEach(r=>r.classList.remove('leg-validation-invalid')); });
+  $('editorLegRows').addEventListener('change',()=>{ $('tripValidationError').classList.add('hidden'); });
   $('tripForm').addEventListener('submit',async e=>{
     e.preventDefault();const btn=$('saveTripButton');btn.disabled=true;
     try {
       const candidate={...(t||{}),aircraft:$('tripAircraft').value,airline:$('tripAirline').value,region:$('tripRegion').value,notes:$('tripNotes').value,legs:readEditorLegs(),tripNumber:$('tripNumberManual').checked?Number($('tripNumber').value):(!t || comboKey(t)!==comboKey({airline:$('tripAirline').value,aircraft:$('tripAircraft').value})?null:t.tripNumber),numberManual:$('tripNumberManual').checked,numberLocked:t?.numberLocked===true && !$('tripNumberManual').checked};
+      const sequenceCheck=validateTripSequence(candidate.legs);
+      if(!sequenceCheck.valid){
+        const error=$('tripValidationError');error.textContent=sequenceCheck.message;error.classList.remove('hidden');
+        const row=$('editorLegRows').querySelectorAll('[data-leg-row]')[sequenceCheck.index];
+        row?.classList.add('leg-validation-invalid');
+        row?.querySelector(`[data-field="${sequenceCheck.kind==='route'?'departure':'completed'}"]`)?.focus();
+        throw new Error(sequenceCheck.message);
+      }
+      $('tripValidationError').classList.add('hidden');
       const comboCount=state.trips.filter(x=>comboKey(x)===comboKey(candidate) && (!t||x.id!==t.id)).length+1;
       if($('tripNumberManual').checked && (!validNumber(candidate.tripNumber) || candidate.tripNumber>comboCount))throw new Error(`Trip number must be between 1 and ${comboCount} for this airline and aircraft.`);
       await saveTrip(candidate,id);closeModal();toast(t?'Trip updated.':'Trip created.');

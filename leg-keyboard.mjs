@@ -20,7 +20,7 @@ function moveFocus(container, rowIndex, columnIndex, caretPosition) {
   return true;
 }
 
-export function installLegKeyboardNavigation(container, { readLegs, renderLegs, blankLeg }) {
+export function installLegKeyboardNavigation(container, { readLegs, renderLegs, blankLeg, createInsertedLeg = (_legs,_index) => blankLeg() }) {
   container.addEventListener('keydown', event => {
     const field = event.target.closest('[data-field]');
     const row = field?.closest('[data-leg-row]');
@@ -34,7 +34,7 @@ export function installLegKeyboardNavigation(container, { readLegs, renderLegs, 
     if (event.key === 'Enter' && event.shiftKey) {
       event.preventDefault(); // Must not submit the trip form.
       const legs = readLegs(); // Preserve every unsaved edit and checkbox state.
-      legs.splice(rowIndex + 1, 0, blankLeg());
+      legs.splice(rowIndex + 1, 0, createInsertedLeg(legs, rowIndex + 1));
       renderLegs(legs);
       moveFocus(container, rowIndex + 1, 0, 'start');
       return;
