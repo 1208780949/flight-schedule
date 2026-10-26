@@ -13,16 +13,18 @@ import { inspectArchive, validateArchive, validateArchivedTrip } from './archive
 import { cleanGroups, createGroup, renameGroup, deleteGroup, moveType, assignedGroup, matchesAircraft, UNGROUPED } from './aircraft-groups.mjs';
 import { validateTripSequence, firstUpcomingLeg, validateCompletionUpdate, blankLegAfter } from './trip-validation.mjs';
 import { fitRouteSummary } from './route-summary.mjs';
+import { searchAirportOccurrences, normaliseAirportCode } from './airport-search.mjs';
 
 const firebase = initializeApp(firebaseConfig);
 const auth = getAuth(firebase);
 const db = getFirestore(firebase);
 const $ = id => document.getElementById(id);
-const state = { numberingBusy:false, user: null, unsubscribe: null, unsubscribeGroups: null, trips: [], groups: [], loading: true, view: 'planned', region: 'all', aircraft: 'all', aircraftGroup: null, collapsedGroups: new Set(), airline: 'all', modalTripId: null, editorLegs: [] };
+const state = { numberingBusy:false, user: null, unsubscribe: null, unsubscribeGroups: null, trips: [], groups: [], loading: true, view: 'planned', region: 'all', aircraft: 'all', aircraftGroup: null, collapsedGroups: new Set(), airline: 'all', airportSearch: { airport: '', aircraft: 'all', region: 'all', status: 'planned' }, modalTripId: null, editorLegs: [] };
 const views = {
   planned: ['PLANNING', 'Flight planning', 'Build and organise itineraries for every aircraft type.', 'Planned itineraries'],
   active: ['ACTIVE FLIGHTS', 'Active trips', 'One active itinerary per region. Track progress leg by leg.', 'Currently flying'],
   archived: ['ARCHIVE', 'Flight archive', 'Your history of completed trips and flight legs.', 'Completed itineraries'],
+  'airport-search': ['AIRPORT SEARCH', 'Airport search', 'Count departures and arrivals across your flight schedules.', 'Airport results'],
 };
 let toastTimer;
 function toast(message, error = false) {
@@ -64,7 +66,7 @@ function toggleGroupCollapsed(id) {
 onAuthStateChanged(auth, (user) => {
   if (state.unsubscribe) { state.unsubscribe(); state.unsubscribe = null; }
   if (state.unsubscribeGroups) { state.unsubscribeGroups(); state.unsubscribeGroups = null; }
-  state.user = user; state.trips = []; state.groups = []; state.loading = true; state.aircraft = 'all'; state.aircraftGroup = null; state.collapsedGroups = user ? loadCollapsedGroups(user.uid) : new Set(); state.airline = 'all'; closeModal();
+  state.user = user; state.trips = []; state.groups = []; state.loading = true; state.aircraft = 'all'; state.aircraftGroup = null; state.collapsedGroups = user ? loadCollapsedGroups(user.uid) : new Set(); state.airline = 'all'; state.airportSearch = {airport:'', aircraft:'all', region:'all', status:'planned'}; $('airportSearchCode').value=''; closeModal();
   $('authScreen').classList.toggle('hidden', !!user);
   $('mainApp').classList.toggle('hidden', !user);
   if (!user) return;
@@ -100,6 +102,18 @@ $('newTripButton').addEventListener('click', () => openEditor(null, {region: sta
 $('importButton').addEventListener('click', () => $('importFile').click());
 $('exportButton').addEventListener('click', backup);
 $('airlineFilter').addEventListener('change', e => { state.airline = e.target.value; render(); });
+// Dedicated search filters are deliberately independent from the planning board.
+$('airportSearchCode').addEventListener('input', e => {
+  state.airportSearch.airport = e.target.value;
+  renderAirportSearchResults();
+});
+for (const [id, key] of [['airportSearchAircraft','aircraft'],['airportSearchRegion','region'],['airportSearchStatus','status']]) {
+  $(id).addEventListener('change', e => {
+    state.airportSearch[key] = e.target.value;
+    renderAirportSearchResults();
+  });
+}
+
 $('importFile').addEventListener('change', async e => {
   const file = e.target.files?.[0]; e.target.value = '';
   if (!file) return;
@@ -131,7 +145,58 @@ function watchRouteSummaries() {
 }
 if (document.fonts?.ready) void document.fonts.ready.then(() => watchRouteSummaries());
 
+function renderAirportSearch() {
+  const known = [...new Set(state.trips.map(t=>t.aircraft).filter(Boolean))].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
+  const owned = new Set();
+  const groupChoices = state.groups.map(g => {
+    const inGroup = g.types.filter(type => known.some(k=>k.toLocaleLowerCase('en')===type.toLocaleLowerCase('en')));
+    for (const type of inGroup) owned.add(type.toLocaleLowerCase('en'));
+    return inGroup.length ? `<option value="group:${esc(g.id)}">Group: ${esc(g.name)}</option>` : '';
+  }).join('');
+  const typeChoices = known.map(a => `<option value="type:${esc(a)}">${esc(a)}</option>`).join('');
+  const options = `<option value="all">All aircraft</option>` +
+    (groupChoices ? `<optgroup label="Aircraft groups">${groupChoices}</optgroup>` : '') +
+    (typeChoices ? `<optgroup label="Aircraft types">${typeChoices}</optgroup>` : '');
+  const dropdown = $('airportSearchAircraft');
+  dropdown.innerHTML = options;
+  if (![...dropdown.options].some(opt => opt.value === state.airportSearch.aircraft)) state.airportSearch.aircraft='all';
+  dropdown.value = state.airportSearch.aircraft;
+  $('airportSearchRegion').value = state.airportSearch.region;
+  $('airportSearchStatus').value = state.airportSearch.status;
+  if ($('airportSearchCode').value !== state.airportSearch.airport) $('airportSearchCode').value = state.airportSearch.airport;
+  renderAirportSearchResults();
+}
+
+function renderAirportSearchResults() {
+  const target = $('airportSearchResults');
+  if (state.loading) { target.innerHTML = '<div class="airport-search-message">Loading flight schedules from Firestore…</div>'; return; }
+  const filter = state.airportSearch;
+  const code = normaliseAirportCode(filter.airport);
+  if (!code) { target.innerHTML = '<div class="airport-search-message">Enter an airport code to count its occurrences.</div>'; return; }
+  if (!/^[A-Z0-9]{3,5}$/.test(code)) { target.innerHTML = '<div class="airport-search-message">Enter a valid 3–5 character airport code.</div>'; return; }
+  const matchesType = aircraft => {
+    if (filter.aircraft === 'all') return true;
+    if (filter.aircraft.startsWith('group:')) return matchesAircraft(aircraft,'all',filter.aircraft.slice(6),state.groups);
+    if (filter.aircraft.startsWith('type:')) return aircraft === filter.aircraft.slice(5);
+    return false;
+  };
+  const result = searchAirportOccurrences(state.trips,{airport:code,region:filter.region,status:filter.status,matchesAircraft:matchesType});
+  const summary = `<div class="airport-results-heading"><h3>${esc(code)} — ${result.total} ${result.total===1?'occurrence':'occurrences'}</h3><span>${result.trips} ${result.trips===1?'trip':'trips'} · ${result.legs} ${result.legs===1?'leg':'legs'}</span></div>`;
+  const metrics = `<div class="airport-result-metrics"><div><strong>${result.total}</strong><span>Total appearances</span></div><div><strong>${result.departures}</strong><span>Departures</span></div><div><strong>${result.arrivals}</strong><span>Arrivals</span></div><div><strong>${result.trips}</strong><span>Matching trips</span></div></div>`;
+  if (!result.matches.length) { target.innerHTML = summary+metrics+'<div class="airport-search-message">No matches for the selected filters.</div>'; return; }
+  const cap=100;
+  const rows=result.matches.slice(0,cap).map(m=>`<tr><td><button type="button" class="airport-result-trip" data-open="${esc(m.tripId)}">${esc(m.title)}</button></td><td>${esc(regionName(m.region))}</td><td>Leg ${m.index+1}${m.flightNumber ? ` · ${esc(m.flightNumber)}` : ''}</td><td>${esc(m.departure)} → ${esc(m.arrival)}</td><td>${m.departureMatch&&m.arrivalMatch?'Departure + arrival':m.departureMatch?'Departure':'Arrival'}</td></tr>`).join('');
+  target.innerHTML=summary+metrics+`<div class="airport-results-table-wrap"><table class="airport-results-table"><thead><tr><th>Trip</th><th>Region</th><th>Flight</th><th>Route</th><th>Match</th></tr></thead><tbody>${rows}</tbody></table></div>`+
+    (result.matches.length>cap?`<p class="airport-result-cap">Showing the first ${cap} matching legs of ${result.matches.length}; counts above include all matches.</p>`:'')+
+    '<p class="airport-search-footnote">Each departure and each arrival counts as one occurrence. A flight that departs and arrives at the same airport counts twice.</p>';
+}
+
 function render() {
+  const isAirportSearch = state.view === 'airport-search';
+  $('airportSearchPanel').classList.toggle('hidden',!isAirportSearch);
+  $('stats').classList.toggle('hidden',isAirportSearch);
+  $('boardToolbar').classList.toggle('hidden',isAirportSearch);
+  $('board').classList.toggle('hidden',isAirportSearch);
   const cfg = views[state.view];
   $('breadcrumbPage').textContent = cfg[0]; $('pageTitle').textContent = cfg[1]; $('pageSubtitle').textContent = cfg[2];
   $('boardTitle').textContent = cfg[3];
@@ -166,6 +231,7 @@ function render() {
   $('airlineFilter').innerHTML = '<option value="all">All airlines</option>' +
     airlines.map(a => `<option value="${esc(a)}">${esc(a)}</option>`).join('');
   $('airlineFilter').value = state.airline;
+  if (isAirportSearch) { renderAirportSearch(); return; }
   const visible = grouped(state.trips, state.view, 'all', state.region, state.airline).filter(t=>matchesAircraft(t.aircraft,state.aircraft,state.aircraftGroup,state.groups));
   $('boardCount').textContent = `${visible.length} ${visible.length === 1 ? 'trip' : 'trips'}`;
   if (state.loading) { $('board').innerHTML = '<div class="loading">Loading schedules from Firestore…</div>'; return; }

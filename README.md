@@ -1,31 +1,34 @@
-# Flight Schedule v1.7 — Trip editor validation and active-flight workflow
+# Flight Schedule v1.8 — Airport occurrence search
 
-Built from the **working v1.6 release**, without the experimental v1.4.1 sign-in hotfix. Firestore authentication and rules are unchanged.
+Based directly on **v1.7**. No changes to Firebase authentication, Firestore rules, existing trip documents, or aircraft grouping data.
 
-## Changes
+## New feature
 
-1. **Sidebar order:** Active trips now appears above Flight planning; Flight archive remains third.
-2. **Width-aware route previews:** The cards display as many airports as their actual width permits, preserving the first and last airport when abbreviating. A `ResizeObserver` updates the text when card width changes (including narrowing the browser window or selecting a single region).
-3. **Route continuity validation:** The editor prevents Save trip when the arrival ICAO of leg `i` differs from the departure ICAO of leg `i+1`. A message identifies the affected legs and airports, and focuses the offending departure field. Airport case is normalised.
-4. **New leg default departure:** Shift+Enter, the row-end `+` button, and Add leg pre-fill the new leg's departure using the preceding leg's current arrival. Insert first remains blank because no preceding flight exists.
-5. **Upcoming flight on Active card:** A dedicated section shows the next unfinished flight's route and flight number with a **Complete** button. It changes Firestore immediately and reflects across devices. If all flights are done, the card indicates the trip is ready to archive.
-6. **Details completion permissions:** Checkboxes in View details are enabled **only for Active trips**. Planned and Archived flights are read-only in View details. Editing an itinerary is a separate operation.
-7. **Completion integrity on editor Save:** Completion must form a contiguous prefix from leg 1, or all legs may be incomplete. Later completed legs after a gap prevent Save. A transaction also enforces this when marking completed legs on active trip cards or in trip details.
-8. **Card layout:** Removed the redundant aircraft-type label above the trip name. The name already contains the aircraft type.
-9. **Card sorting:** Cards are sorted alphabetically by trip name, using natural numeric order, within each region.
+Use **Airport search** in the left sidebar to find how often an airport appears in the saved flight legs.
 
-## Upgrade from v1.6
+- Search by exact 3–5 character airport code (e.g., `KATL`; case-insensitive).
+- Default filters: **All aircraft**, **All regions**, **Planned**.
+- Aircraft filter: all types, one aircraft type, or an existing aircraft group.
+- Region filter: all, North America, Europe, Rest of World.
+- Status filter: Planned, Active, Archive, or All statuses.
+- Results show total occurrences, departures, arrivals, number of matching trips, and a table linking to matching trip details.
+- Every matching departure or arrival endpoint counts once. A leg with the same departure and arrival airport counts twice.
+- The results table shows up to the first 100 matching flight legs, sorted by trip name and leg order, but the counters always include all matches.
+- Search filters are independent of the trip board filters, and results update automatically as Firestore syncs.
+- Entire search is read-only and performed over the current signed-in user's Firestore trips. It does not query public airport databases or make any new writes.
 
-1. Back up existing trips using **Backup** on the live website.
-2. Replace `app.js`, `index.html`, `styles.css`, `leg-keyboard.mjs`, and `leg-reorder.mjs`.
-3. Add the two new modules `trip-validation.mjs` and `route-summary.mjs` in the **repository root**, alongside `app.js`.
-4. Commit to `main`, check GitHub Actions for successful Pages deployment, then hard-refresh the website (`Ctrl+Shift+R`).
+## Update from v1.7
 
-There is **no change to Firebase configuration, Firestore rules, schema, login, or imported data**. Do not reimport your backup and do not publish private schedules in GitHub.
+1. If desired, make a backup from the running site with **Backup** before updating.
+2. Replace `app.js`, `index.html`, and `styles.css` in your GitHub repository root with the files from this release.
+3. Upload the **new** `airport-search.mjs` in the repository root (next to `app.js`).
+4. Commit directly to the `main` branch; check the GitHub Pages deployment under **Actions**.
+5. Reload the published site using **Ctrl + Shift + R**. The footer should read *Flight Schedule v1.8*.
 
-## Important behaviour
+**No Firebase setup, security-rule update, re-import, or migration is needed.** Your actual flight schedules stay in Firestore; do not upload private JSON backups to a public GitHub repository.
 
-- For legacy trips with discontinuous flight routes or gaps in completed legs, v1.7 will not silently edit their contents. Open the trip editor and correct the route and/or completion flags before saving.
-- The upcoming-leg Complete action checks the latest server-side trip status, leg identity and completion order inside a Firestore transaction, so a stale card cannot complete a different leg after another device reorders the trip.
-- A fully completed active trip still requires explicit archive action via View details.
-- Validation happens in the **trip editor** before writing; historical data and imports are not modified automatically.
+If you are upgrading from earlier than v1.7, use the full release to ensure the required modules are all present. Files must be uploaded directly into the repository root, not inside the ZIP's containing folder.
+
+## Validation
+
+The pure airport counting module passed Node.js unit tests covering departure/arrival counting, same-airport round trips, aircraft and regional filters, status filters, case-insensitive input, and non-mutation of trip data. JavaScript syntax checks passed. An automated full browser test and a live Firebase deployment could not be completed in this execution environment. The code requires deployment to GitHub Pages for live verification.
