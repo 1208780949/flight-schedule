@@ -1,34 +1,24 @@
-# Flight Schedule v1.8 — Airport occurrence search
+# Flight Schedule v1.9 — Dark mode, Active landing, and aircraft filter scoping
 
-Based directly on **v1.7**. No changes to Firebase authentication, Firestore rules, existing trip documents, or aircraft grouping data.
+Built directly from **v1.8**, retaining the existing Firebase configuration, trip data model, aircraft groups, number allocation, validation, active slots, and airport search.
 
-## New feature
+## Changes
 
-Use **Airport search** in the left sidebar to find how often an airport appears in the saved flight legs.
+1. **Dark mode is the default** on first visit, including the sign-in screen, Active board, planning board, trip dialogs, and airport search. Select **Light mode** in the header to switch to the previous light styling; the preference is saved locally in the browser (no Firestore write). Select **Dark mode** to switch back. If local storage is blocked, theme works for the current page session but may reset on reload.
+2. **Active trips is the opening view** after sign-in and after reloading the page. The Active sidebar tab is first and is selected on load. North America, Europe, and Rest of World remain three independent active slots.
+3. **Aircraft group and aircraft-type sidebar filters apply only to Flight planning and Flight archive.** The aircraft-group sidebar is hidden in Active trips and Airport search. Active shows all active trips permitted by the region and airline dropdown filters, regardless of a group/type previously selected in Planning or Archive. Group/type selections are retained when moving between Planning and Archive. The separate aircraft filter on the Airport search page remains independent and unchanged.
 
-- Search by exact 3–5 character airport code (e.g., `KATL`; case-insensitive).
-- Default filters: **All aircraft**, **All regions**, **Planned**.
-- Aircraft filter: all types, one aircraft type, or an existing aircraft group.
-- Region filter: all, North America, Europe, Rest of World.
-- Status filter: Planned, Active, Archive, or All statuses.
-- Results show total occurrences, departures, arrivals, number of matching trips, and a table linking to matching trip details.
-- Every matching departure or arrival endpoint counts once. A leg with the same departure and arrival airport counts twice.
-- The results table shows up to the first 100 matching flight legs, sorted by trip name and leg order, but the counters always include all matches.
-- Search filters are independent of the trip board filters, and results update automatically as Firestore syncs.
-- Entire search is read-only and performed over the current signed-in user's Firestore trips. It does not query public airport databases or make any new writes.
+## Upgrade from v1.8
 
-## Update from v1.7
+1. Download a JSON backup of your trip data from the existing website if desired.
+2. Replace **`app.js`**, **`index.html`**, and **`styles.css`** in the **root** of your GitHub Pages repository with the files from this v1.9 patch. Keep all other files, including `airport-search.mjs`, in place.
+3. Commit the changes to `main`; wait for GitHub → Actions → Pages build and deployment to succeed.
+4. Refresh the live website with **Ctrl+Shift+R**. The footer should now read **Flight Schedule v1.9**.
 
-1. If desired, make a backup from the running site with **Backup** before updating.
-2. Replace `app.js`, `index.html`, and `styles.css` in your GitHub repository root with the files from this release.
-3. Upload the **new** `airport-search.mjs` in the repository root (next to `app.js`).
-4. Commit directly to the `main` branch; check the GitHub Pages deployment under **Actions**.
-5. Reload the published site using **Ctrl + Shift + R**. The footer should read *Flight Schedule v1.8*.
+**No Firestore rule changes, Firebase authentication changes, data migration, or trip re-import are required.** The application remains the same GitHub Pages static site backed by your existing Firebase project. Do not upload private schedule JSON exports to a public repository.
 
-**No Firebase setup, security-rule update, re-import, or migration is needed.** Your actual flight schedules stay in Firestore; do not upload private JSON backups to a public GitHub repository.
-
-If you are upgrading from earlier than v1.7, use the full release to ensure the required modules are all present. Files must be uploaded directly into the repository root, not inside the ZIP's containing folder.
+If upgrading from v1.7 or earlier, use the **full v1.9 release ZIP** and upload the contents of the folder directly into the repository root, rather than adding an extra folder level.
 
 ## Validation
 
-The pure airport counting module passed Node.js unit tests covering departure/arrival counting, same-airport round trips, aircraft and regional filters, status filters, case-insensitive input, and non-mutation of trip data. JavaScript syntax checks passed. An automated full browser test and a live Firebase deployment could not be completed in this execution environment. The code requires deployment to GitHub Pages for live verification.
+JavaScript syntax checks passed for all JavaScript modules; CSS parsing and relevant static checks passed. An end-to-end Chromium browser test was attempted but the execution environment blocked all browser navigation. Browser display and live Firebase interaction have **not** been verified here.

@@ -133,3 +133,145 @@
 .airport-result-cap,.airport-search-footnote{font-size:11px;color:#748b9d;margin:13px 2px}
 @media(max-width:980px){.airport-search-controls{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:600px){.airport-search-controls{grid-template-columns:1fr;padding:13px}.airport-result-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.airport-result-metrics>div{padding:12px}.airport-result-metrics strong{font-size:21px}}
+
+/* v1.9 — complete dark palette. The original styles remain the light theme.
+   Theme is browser-local and defaults to dark in index.html. */
+.theme-toggle{min-width:104px}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  color:#e5ecf7;
+  background:#0b1220;
+  --night-panel:#151f30;
+  --night-panel-soft:#1b293b;
+  --night-border:#2c3d52;
+  --night-text:#e5ecf7;
+  --night-muted:#9aadbf;
+  --night-accent:#88c5fa;
+}
+:root[data-theme="dark"] .sidebar{background:#091524;color:#e5ecf7}
+:root[data-theme="dark"] .main-content{color:var(--night-text)}
+:root[data-theme="dark"] .breadcrumbs,
+:root[data-theme="dark"] .eyebrow{color:#92aeca}
+:root[data-theme="dark"] .subheading,
+:root[data-theme="dark"] .footer-note{color:var(--night-muted)}
+:root[data-theme="dark"] .btn.neutral{background:#1d2c40;color:#dceaff;border-color:#334a61}
+:root[data-theme="dark"] .btn.neutral:hover{background:#273b55}
+:root[data-theme="dark"] .btn.primary{background:#266faa;color:#fff;box-shadow:none}
+:root[data-theme="dark"] .btn.primary:hover{background:#3283bd}
+:root[data-theme="dark"] .btn.ghost{color:var(--night-accent)}
+:root[data-theme="dark"] .btn.danger{background:#40262d;color:#ffb3bc;border-color:#7b4453}
+:root[data-theme="dark"] .stat-card,
+:root[data-theme="dark"] .trip-card,
+:root[data-theme="dark"] .airport-search-controls,
+:root[data-theme="dark"] .airport-result-metrics>div,
+:root[data-theme="dark"] .airport-results-table-wrap{background:var(--night-panel);border-color:var(--night-border);box-shadow:none}
+:root[data-theme="dark"] .stat-card .stat-label{color:#a7bdd1}
+:root[data-theme="dark"] .stat-card .stat-value{color:#f0f6fd}
+:root[data-theme="dark"] .stat-card .stat-description{color:var(--night-muted)}
+:root[data-theme="dark"] .board-count{color:#b4d6f7;background:#243951}
+:root[data-theme="dark"] .region-tabs{background:#1a2839;border-color:var(--night-border)}
+:root[data-theme="dark"] .region-tab{color:#adc0d2}
+:root[data-theme="dark"] .region-tab:hover{color:#f4f9ff;background:#263a51}
+:root[data-theme="dark"] .region-tab.selected{background:#315878;color:#fff;box-shadow:none}
+:root[data-theme="dark"] .region-column{background:#111c2c;border-color:#2b3a50}
+:root[data-theme="dark"] .region-mark{background:#223d59;color:#a7d5fb}
+:root[data-theme="dark"] .region-heading small{color:#9eb0c2}
+:root[data-theme="dark"] .trip-card:hover{border-color:#5587b1;box-shadow:0 5px 22px #0003}
+:root[data-theme="dark"] .trip-status,
+:root[data-theme="dark"] .trip-type{color:#a9c7de}
+:root[data-theme="dark"] .trip-route{color:#b6c8da}
+:root[data-theme="dark"] .card-footer{border-color:#2b3d51}
+:root[data-theme="dark"] .mini-progress{color:#a9b9c9}
+:root[data-theme="dark"] .text-action{color:#91ceff}
+:root[data-theme="dark"] .progress-track{background:#27364b}
+:root[data-theme="dark"] .progress-fill{background:#45b99e}
+:root[data-theme="dark"] .empty-region{background:#172337;border-color:#42546a;color:#b3c2d2}
+:root[data-theme="dark"] .empty-icon{background:#263f5b;color:#b5dafa}
+:root[data-theme="dark"] .upcoming-leg{background:#182c3f;border-color:#31516a}
+:root[data-theme="dark"] .upcoming-label{color:#9fb9d3}
+:root[data-theme="dark"] .upcoming-route{color:#e2f0fa}
+:root[data-theme="dark"] .upcoming-route small{color:#a8c0d5}
+:root[data-theme="dark"] .complete-next-btn{color:#b6f7d7;background:#164c40;border-color:#347d69}
+:root[data-theme="dark"] .complete-next-btn:hover{background:#22634f}
+:root[data-theme="dark"] .next-checkbox{background:#122a27;border-color:#91dfc4}
+:root[data-theme="dark"] .upcoming-done{color:#83dbb8}
+:root[data-theme="dark"] .auth-screen{background:radial-gradient(circle at 75% 5%,#203957,#08111f 70%)}
+:root[data-theme="dark"] .auth-card{background:#152338;color:#e8f0f9;border:1px solid #36485e;box-shadow:0 20px 90px #0008}
+:root[data-theme="dark"] .auth-card .brand-lockup{color:#e8f1fa}
+:root[data-theme="dark"] .auth-card .eyebrow{color:#8dc7f2}
+:root[data-theme="dark"] .auth-card p{color:#b0bfd0}
+:root[data-theme="dark"] .form-stack label,
+:root[data-theme="dark"] .field>label{color:#c4d5e7}
+:root[data-theme="dark"] input,
+:root[data-theme="dark"] select,
+:root[data-theme="dark"] textarea{background:#172538;border-color:#344960;color:#e9f1fa}
+:root[data-theme="dark"] input::placeholder,
+:root[data-theme="dark"] textarea::placeholder{color:#849ab0}
+:root[data-theme="dark"] input:focus,
+:root[data-theme="dark"] select:focus,
+:root[data-theme="dark"] textarea:focus{border-color:#6bb5ed;box-shadow:0 0 0 3px #427ba250}
+:root[data-theme="dark"] .auth-error{color:#ffafb6!important}
+:root[data-theme="dark"] .modal-backdrop{background:#040c18d9}
+:root[data-theme="dark"] .modal{background:#152133;color:#e9f1fa;border:1px solid #34475c;box-shadow:0 25px 100px #000a}
+:root[data-theme="dark"] .modal-header,
+:root[data-theme="dark"] .modal-footer{border-color:#344458}
+:root[data-theme="dark"] .modal-footer{background:#101d2f}
+:root[data-theme="dark"] .modal-header .eyebrow{color:#97c9ee}
+:root[data-theme="dark"] .icon-btn{background:#27384e;color:#d1e6f6}
+:root[data-theme="dark"] .icon-btn:hover{background:#33506b}
+:root[data-theme="dark"] .pill{background:#243b54;border-color:#395b79;color:#c0e4fd}
+:root[data-theme="dark"] .pill.green{background:#1d4239;border-color:#386e5d;color:#a2ebcb}
+:root[data-theme="dark"] .pill.gray{background:#2b3544;color:#c0cbd7;border-color:#475569}
+:root[data-theme="dark"] .detail-note{background:#202f43;color:#bdcfe1}
+:root[data-theme="dark"] .legs-table th{border-color:#32465b;color:#aac2d8}
+:root[data-theme="dark"] .legs-table td{border-color:#2b3f52;color:#bdcfe1}
+:root[data-theme="dark"] .legs-table td:nth-child(2){color:#ecf3fa}
+:root[data-theme="dark"] .legs-table .completed-leg td,
+:root[data-theme="dark"] .legs-table .completed-leg td:nth-child(2){color:#90a5b7}
+:root[data-theme="dark"] .route-arrow{color:#95afc7}
+:root[data-theme="dark"] .checkbox-button{border-color:#718ca2;background:#22364c;color:#fff}
+:root[data-theme="dark"] .checkbox-button.checked{background:#22866d;border-color:#42aa8f}
+:root[data-theme="dark"] .editor-leg-header{color:#acbfd2}
+:root[data-theme="dark"] .leg-edit-row{border-color:#2f4256}
+:root[data-theme="dark"] .leg-edit-row .rownum{color:#9eb4c9}
+:root[data-theme="dark"] .row-actions button{background:#293e54;color:#d3e7f8}
+:root[data-theme="dark"] .row-actions button:hover{background:#365572}
+:root[data-theme="dark"] .row-actions .leg-grab{background:#274a69;color:#c7e4fb}
+:root[data-theme="dark"] .row-actions .leg-insert-inline{background:#244864;color:#a8dcff;border-color:#41698a}
+:root[data-theme="dark"] .row-actions .leg-insert-inline:hover{background:#326486;color:#fff}
+:root[data-theme="dark"] .leg-edit-row.leg-dragging{background:#233c51}
+:root[data-theme="dark"] .leg-edit-row.leg-drop-before,
+:root[data-theme="dark"] .leg-edit-row.leg-drop-after{background:#1c3e51}
+:root[data-theme="dark"] .edit-footnote,
+:root[data-theme="dark"] .modal-plain,
+:root[data-theme="dark"] .muted{color:#adbed0}
+:root[data-theme="dark"] .warning-box{background:#403522;color:#f2ce8c;border:1px solid #745c38}
+:root[data-theme="dark"] .archive-warning{background:#3c2b29;border-color:#985f55;color:#ffd5c4}
+:root[data-theme="dark"] .trip-validation-error{background:#402929;border-color:#975958;color:#ffd0cc}
+:root[data-theme="dark"] .leg-edit-row.leg-validation-invalid{background:#3e292c;box-shadow:inset 3px 0 #ff8a7c}
+:root[data-theme="dark"] .loading{color:#aabed0}
+:root[data-theme="dark"] .airport-search-intro h2,
+:root[data-theme="dark"] .airport-results-heading h3{color:#e5eff9}
+:root[data-theme="dark"] .airport-search-intro p,
+:root[data-theme="dark"] .airport-results-heading span{color:#a9bdd0}
+:root[data-theme="dark"] .airport-search-field{color:#b9cce0}
+:root[data-theme="dark"] .airport-search-field input,
+:root[data-theme="dark"] .airport-search-field select{background:#1a2a3e;color:#edf5ff;border-color:#40576f}
+:root[data-theme="dark"] .airport-search-message{background:#1a293b;color:#b7cadc;border-color:#34485d}
+:root[data-theme="dark"] .airport-result-metrics strong{color:#9dd2ff}
+:root[data-theme="dark"] .airport-result-metrics span{color:#b2c4d5}
+:root[data-theme="dark"] .airport-results-table th{background:#203046;color:#b9cce0}
+:root[data-theme="dark"] .airport-results-table th,
+:root[data-theme="dark"] .airport-results-table td{border-color:#2e4055}
+:root[data-theme="dark"] .airport-result-trip{color:#a0d3ff}
+:root[data-theme="dark"] .airport-result-cap,
+:root[data-theme="dark"] .airport-search-footnote{color:#9fb6ca}
+:root[data-theme="dark"] .aircraft-folder.drag-over{background:#27445d}
+:root[data-theme="dark"] .toast{background:#223a56;color:#eff6fe}
+:root[data-theme="dark"] .toast.error{background:#833843}
+:root[data-theme="dark"] .airline-filter-label{color:#b4c8dc}
+:root[data-theme="dark"] .airline-filter{background:#1b2b3f;border-color:#3b5369;color:#edf5ff}
+:root[data-theme="dark"] .numbering-panel{background:#1b3046;border-color:#3d5975}
+:root[data-theme="dark"] .generated-trip-title{color:#d5ebfc}
+:root[data-theme="dark"] .manual-number-label{color:#b6d0e5}
+:root[data-theme="dark"] .invalid-number{color:#ffb2b6!important}

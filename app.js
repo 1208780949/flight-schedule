@@ -19,7 +19,7 @@ const firebase = initializeApp(firebaseConfig);
 const auth = getAuth(firebase);
 const db = getFirestore(firebase);
 const $ = id => document.getElementById(id);
-const state = { numberingBusy:false, user: null, unsubscribe: null, unsubscribeGroups: null, trips: [], groups: [], loading: true, view: 'planned', region: 'all', aircraft: 'all', aircraftGroup: null, collapsedGroups: new Set(), airline: 'all', airportSearch: { airport: '', aircraft: 'all', region: 'all', status: 'planned' }, modalTripId: null, editorLegs: [] };
+const state = { numberingBusy:false, user: null, unsubscribe: null, unsubscribeGroups: null, trips: [], groups: [], loading: true, view: 'active', region: 'all', aircraft: 'all', aircraftGroup: null, collapsedGroups: new Set(), airline: 'all', airportSearch: { airport: '', aircraft: 'all', region: 'all', status: 'planned' }, modalTripId: null, editorLegs: [] };
 const views = {
   planned: ['PLANNING', 'Flight planning', 'Build and organise itineraries for every aircraft type.', 'Planned itineraries'],
   active: ['ACTIVE FLIGHTS', 'Active trips', 'One active itinerary per region. Track progress leg by leg.', 'Currently flying'],
@@ -66,6 +66,7 @@ function toggleGroupCollapsed(id) {
 onAuthStateChanged(auth, (user) => {
   if (state.unsubscribe) { state.unsubscribe(); state.unsubscribe = null; }
   if (state.unsubscribeGroups) { state.unsubscribeGroups(); state.unsubscribeGroups = null; }
+  state.view = 'active'; // Always open the Active board on sign-in/reload.
   state.user = user; state.trips = []; state.groups = []; state.loading = true; state.aircraft = 'all'; state.aircraftGroup = null; state.collapsedGroups = user ? loadCollapsedGroups(user.uid) : new Set(); state.airline = 'all'; state.airportSearch = {airport:'', aircraft:'all', region:'all', status:'planned'}; $('airportSearchCode').value=''; closeModal();
   $('authScreen').classList.toggle('hidden', !!user);
   $('mainApp').classList.toggle('hidden', !user);
@@ -98,6 +99,25 @@ $('loginForm').addEventListener('submit', async e => {
   finally { $('loginButton').disabled = false; }
 });
 $('signOutButton').addEventListener('click', () => signOut(auth).catch(err => toast(errorMessage(err), true)));
+// Theme is a per-browser presentation setting; no Firestore schema change.
+const THEME_STORAGE_KEY = 'flight-planner-theme';
+function applyTheme(theme) {
+  const value = theme === 'light' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = value;
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', value === 'dark' ? '#0b1220' : '#f4f6fa');
+  const toggle = $('themeToggle');
+  toggle.textContent = value === 'dark' ? '☀ Light mode' : '☾ Dark mode';
+  toggle.setAttribute('aria-label', `Switch to ${value === 'dark' ? 'light' : 'dark'} mode`);
+  toggle.setAttribute('aria-pressed', String(value === 'dark'));
+  toggle.title = `Currently using ${value} mode`;
+}
+applyTheme(document.documentElement.dataset.theme);
+$('themeToggle').addEventListener('click', () => {
+  const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+  applyTheme(next);
+  try { localStorage.setItem(THEME_STORAGE_KEY, next); }
+  catch { /* Storage may be unavailable in private browsing. */ }
+});
 $('newTripButton').addEventListener('click', () => openEditor(null, {region: state.region === 'all' ? 'north-america' : state.region}));
 $('importButton').addEventListener('click', () => $('importFile').click());
 $('exportButton').addEventListener('click', backup);
@@ -197,6 +217,9 @@ function render() {
   $('stats').classList.toggle('hidden',isAirportSearch);
   $('boardToolbar').classList.toggle('hidden',isAirportSearch);
   $('board').classList.toggle('hidden',isAirportSearch);
+  // Aircraft group/type selections apply only to Planning and Archive.
+  // Active always shows its regional slots, regardless of selected aircraft.
+  $('aircraftGroupSection').classList.toggle('hidden', !['planned', 'archived'].includes(state.view));
   const cfg = views[state.view];
   $('breadcrumbPage').textContent = cfg[0]; $('pageTitle').textContent = cfg[1]; $('pageSubtitle').textContent = cfg[2];
   $('boardTitle').textContent = cfg[3];
@@ -232,7 +255,9 @@ function render() {
     airlines.map(a => `<option value="${esc(a)}">${esc(a)}</option>`).join('');
   $('airlineFilter').value = state.airline;
   if (isAirportSearch) { renderAirportSearch(); return; }
-  const visible = grouped(state.trips, state.view, 'all', state.region, state.airline).filter(t=>matchesAircraft(t.aircraft,state.aircraft,state.aircraftGroup,state.groups));
+  const useAircraftSidebarFilter = state.view === 'planned' || state.view === 'archived';
+  const visible = grouped(state.trips, state.view, 'all', state.region, state.airline)
+    .filter(t => !useAircraftSidebarFilter || matchesAircraft(t.aircraft, state.aircraft, state.aircraftGroup, state.groups));
   $('boardCount').textContent = `${visible.length} ${visible.length === 1 ? 'trip' : 'trips'}`;
   if (state.loading) { $('board').innerHTML = '<div class="loading">Loading schedules from Firestore…</div>'; return; }
   const regions = REGIONS.filter(r => state.region === 'all' || state.region === r.id);
